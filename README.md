@@ -6,6 +6,6 @@ A catch-all collection of useful snippets. These seemingly simple examples took 
 
 This is not an officially supported Google product.
 
-This software is provided "as is", without warranty of any kind, expressed or implied, including but not limited to, the warranties of merchanability, fitness for a particular purpose, and/or infringement.
+This software is provided "as is", without warranty of any kind, expressed or implied, including but not limited to, the warranties of merchantability, fitness for a particular purpose, and/or infringement.
 
 See license file for additional details.
