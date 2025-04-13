@@ -35,6 +35,7 @@ export interface Product {
     sparseEmbeddingModel?: string;
     retrievalMethod?: string;
     rrfScore?: number;
+    distance?: number;
 }
 
 export interface CymbalShopsService {
@@ -44,6 +45,7 @@ export interface CymbalShopsService {
     naturalSearchProducts(prompt: string, currentRole: string, currentRoleId: number, subscriptionTier: number): Observable<QueryResponse<Product>>;
     freeformSearchProducts(prompt: string, currentRole: string, currentRoleId: number, subscriptionTier: number): Observable<QueryResponse<Product>>;
     hybridSearchProducts(term: string, currentRole: string, currentRoleId: number, subscriptionTier: number): Observable<QueryResponse<Product>>;
+    imageSearchProducts(searchUri: string, currentRole: string, currentRoleId: number, subscriptionTier: number): Observable<QueryResponse<Product>>;
 }
 
 @Injectable({
@@ -85,6 +87,12 @@ export class CymbalShopsServiceClient implements CymbalShopsService {
     hybridSearchProducts(term: string, currentRole: string, currentRoleId: number, subscriptionTier: number): Observable<QueryResponse<Product>> {
         return this.http.get<QueryResponse<Product>>(`${this.baseUrl}/products/hybrid-search`, {
             params: { term: term, currentRole: currentRole, currentRoleId: currentRoleId, subscriptionTier: subscriptionTier}
+        });
+    }
+
+    imageSearchProducts(searchUri: string, currentRole: string, currentRoleId: number, subscriptionTier: number): Observable<QueryResponse<Product>> {
+        return this.http.get<QueryResponse<Product>>(`${this.baseUrl}/products/image-search`, {
+            params: { searchUri: searchUri, currentRole: currentRole, currentRoleId: currentRoleId, subscriptionTier: subscriptionTier}
         });
     }
 }

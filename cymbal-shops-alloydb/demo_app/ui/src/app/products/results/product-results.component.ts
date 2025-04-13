@@ -6,6 +6,7 @@ import { MatCardModule } from '@angular/material/card';
 import { MatExpansionModule } from '@angular/material/expansion';
 import { MatTableModule } from '@angular/material/table';
 import { MatDividerModule } from '@angular/material/divider';
+import { MatGridListModule } from '@angular/material/grid-list';
 import { map } from 'rxjs/operators';
 import { TextToHtmlPipe } from '../../common/text-to-html.pipe';
 import { SqlStatementComponent } from '../../common/sql-statement/sql-statement.component';
@@ -22,6 +23,7 @@ import { RoleService } from '../../services/cymbalshops-api';
     TextToHtmlPipe,
     MatTableModule,
     MatDividerModule,
+    MatGridListModule,
   ],
   templateUrl: './product-results.component.html',
   styleUrl: './product-results.component.scss'
@@ -43,8 +45,6 @@ export class ProductResultsComponent implements OnInit {
   currentRoleMap: Map<string, Array<number | null>> | undefined;
   subscriptionTier: number | null | undefined;
   enablePsv: boolean | undefined;
-
-  searchType?: string = undefined;
 
   ngOnInit(): void {
     console.log("Loading products component.")
@@ -71,7 +71,6 @@ export class ProductResultsComponent implements OnInit {
       this.generatedQuery = undefined;
       this.errorDetail = undefined;
       this.getSqlQuery = undefined;
-      this.searchType = undefined;
       this.cdr.detectChanges();
       return;
     }
@@ -122,7 +121,6 @@ export class ProductResultsComponent implements OnInit {
       this.generatedQuery = response.generatedQuery;
       this.errorDetail = response.errorDetail;
       this.getSqlQuery = response.getSqlQuery;
-      this.searchType = response.searchType;
 
       // Trigger change detection *after* assignments
       this.cdr.detectChanges();
@@ -135,6 +133,27 @@ export class ProductResultsComponent implements OnInit {
       }
     });
   
+  }
+
+
+  @Input() searchType: string | undefined;
+
+  public displaySearchQuery: string | undefined;
+  private _searchQuery: string | undefined;
+  @Input()
+  set searchQuery(value: string | undefined) {
+
+    this._searchQuery = value; // Store the original value
+
+    // --- Apply .replace() logic here ---
+    if (value) {
+
+       this.displaySearchQuery = value.replace('gs://pr-public-demo-data', 'https://storage.cloud.google.com/pr-public-demo-data');
+
+    } else {
+      this.displaySearchQuery = undefined; // Handle null/undefined input
+    }
+    console.log('Display search query set to:', this.displaySearchQuery);
   }
 
   getColumns(obj: any) {

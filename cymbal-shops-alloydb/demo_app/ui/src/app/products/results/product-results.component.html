@@ -38,7 +38,7 @@
     @if(data[0].hasOwnProperty('productDescription')) {
     <div class="products-container">
         <mat-card *ngFor="let product of data" class="product-card">
-            <span><img src='{{product.productImageUri}}' width=100%></span>
+            <img src='{{product.productImageUri}}' width=100%>
             <mat-card-subtitle>
                 <span class="price">{{product.retailPrice}}</span>
                 <span class="productSubtitle">{{product.name}}</span>
@@ -48,6 +48,7 @@
             <!--<div class="productDetail" innerHtml="{{product.productDescription | textToHtml}}"></div>-->
             <span class="productDetailExtended">
                 <!--<mat-divider class="productDivider"></mat-divider>-->
+                <br>Brand: {{product.brand}}
                 <br>Category: {{product.category}}
                 <br>Department: {{product.department}}
                 <br>SKU: {{product.sku}}

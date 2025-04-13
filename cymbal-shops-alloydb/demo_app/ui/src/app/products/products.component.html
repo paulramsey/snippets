@@ -5,6 +5,7 @@
         <mat-radio-button value="{{searchTypes.FULLTEXT}}">Full-text Search</mat-radio-button>
         <mat-radio-button value="{{searchTypes.TEXT_EMBEDDINGS}}">Text Embeddings</mat-radio-button>
         <mat-radio-button value="{{searchTypes.HYBRID}}">Hybrid Search</mat-radio-button>
+        <mat-radio-button value="{{searchTypes.IMAGE}}">Image Search</mat-radio-button>
         
         <!-- AlloyDB NL2SQL to be added later
         <mat-radio-button value="{{searchTypes.NATURAL}}">Natural Language Search</mat-radio-button>
@@ -15,12 +16,14 @@
     </mat-radio-group>
     <mat-form-field>
         <input matInput [(ngModel)]="productSearch" (keydown.enter)="findProducts()"
-            [placeholder]="SEARCH_PLACEHOLDER">
+            [placeholder]="searchType == 'image' ? SEARCH_PLACEHOLDER_IMAGE : SEARCH_PLACEHOLDER">
         <mat-icon matTooltip="Sample suggestion" matSuffix fontSet="material-symbols-outlined"
                 (click)="productSearch = getSuggestion()">
             prompt_suggestion
         </mat-icon>
     </mat-form-field>
+    <app-image-selector *ngIf="searchType=='image'"
+                        (imageSelected)="onImageSelectedFromChild($event)"></app-image-selector>
     <mat-card-actions>
         <button mat-raised-button color="primary" [disabled]="productSearch.length === 0"
             (click)="findProducts()">
@@ -34,5 +37,8 @@
             }
         </button>
     </mat-card-actions>
-    <app-product-results [products]="products"></app-product-results>
+    <app-product-results [products]="products"
+                         [searchQuery]="productSearch"
+                         [searchType]="searchType"></app-product-results>
+    
 </mat-card>

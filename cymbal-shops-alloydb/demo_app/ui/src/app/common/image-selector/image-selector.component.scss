@@ -1,0 +1,101 @@
+// Import the theme file and Angular Material functions
+@use '../../../styles.scss' as theme; // Adjust path if needed
+@use '@angular/material' as mat;
+$cymbal-theme: theme.$cymbal-theme;
+
+// --- Color variables ($selected-border-color, $hover-border-color, etc.) ---
+$primary-palette: map-get(map-get($cymbal-theme, color), primary);
+$accent-palette: map-get(map-get($cymbal-theme, color), accent);
+$foreground: map-get($cymbal-theme, foreground);
+$background: map-get($cymbal-theme, background);
+$selected-border-color: mat.get-color-from-palette($accent-palette, default);
+$hover-border-color: mat.get-color-from-palette($background, hover);
+$selection-display-bg: mat.get-color-from-palette($background, card);
+$selection-display-text: mat.get-color-from-palette($foreground, text);
+$selection-display-border: mat.get-color-from-palette($foreground, divider);
+
+
+// --- Container for the images ---
+.image-selector-container {
+  display: flex;
+  flex-wrap: wrap; // <-- Important: Allows items to wrap to next line
+  gap: 16px;       // Space between items
+  justify-content: center;
+  padding: 10px 0;
+}
+
+// --- Individual image container ---
+.image-container {
+  // --- Core styles (border, padding, cursor, etc.) ---
+  border-radius: 5px;
+  border: 2px solid mat.get-color-from-palette($background, background);
+  padding: 4px;
+  cursor: pointer;
+  transition: border-color 0.2s ease-in-out, transform 0.1s ease-in-out, box-shadow 0.2s ease-in-out;
+  box-sizing: border-box;
+  background-color: mat.get-color-from-palette($background, background);
+  position: relative; // Good practice for containers with sized content
+
+  // --- Responsive Size & Shape Control ---
+  aspect-ratio: 1 / 1; // Makes the container square (1:1 aspect ratio)
+  overflow: hidden;    // Ensures image respects the container's shape/radius
+
+  // --- Flexible Width using Flexbox properties and Media Queries ---
+  // Mobile-first: Aim for 2-3 items across on small screens
+  flex-grow: 1;          // Allow container to grow if space is available
+  flex-shrink: 1;        // Allow container to shrink
+  flex-basis: calc(33.33% - 11px); // Start aiming for 3 across (adjust calc based on gap)
+  min-width: 80px;         // Prevent images from becoming too small
+  max-width: 150px;        // Limit max size on small screens
+
+  // Medium screens (e.g., tablets): Aim for 4 items across
+  @media (min-width: 768px) {
+    flex-basis: calc(25% - 12px); // Adjust calc for 4 items and 16px gap
+    max-width: 180px;
+  }
+
+  // Larger screens (e.g., desktops): Aim for 5 items across
+  @media (min-width: 1024px) {
+    flex-basis: calc(20% - 13px); // Adjust calc for 5 items and 16px gap (16px * 4/5)
+    max-width: 200px;       // Allow up to 200px width as originally intended
+  }
+  // --- End Responsive Size & Shape Control ---
+
+
+  // --- Image Styling ---
+  img {
+    display: block;     // Removes extra space below image
+    // --- Fill the container ---
+    width: 100%;
+    height: 100%;
+    // --- End Fill ---
+    object-fit: cover; // Scale the image to maintain aspect ratio while filling the element's entire content box. Crops if necessary.
+    border-radius: 3px; // Inner radius for the image
+  }
+  // --- End Image Styling ---
+
+
+  // --- Hover and Selected States ---
+  &:hover {
+    border-color: $hover-border-color;
+  }
+
+  &.selected {
+    border-color: $selected-border-color;
+    transform: scale(1.05);
+    box-shadow: 0 5px 10px rgba(0, 0, 0, 0.1);
+  }
+  // --- End Hover and Selected States ---
+}
+
+
+// --- Optional display area styling ---
+.selection-display {
+  margin-top: 20px;
+  padding: 10px 15px;
+  background-color: $selection-display-bg;
+  color: $selection-display-text;
+  border-radius: 5px;
+  font-family: monospace;
+  border: 1px solid $selection-display-border;
+}

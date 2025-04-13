@@ -74,7 +74,7 @@ export class Products {
                         OR category ILIKE '%${safeString(formattedSearchTerm) ?? ''}%'
                         OR brand ILIKE '%${safeString(formattedSearchTerm) ?? ''}%'
                         OR department ILIKE '%${safeString(formattedSearchTerm) ?? ''}%'
-                        OR product_description ILIKE '%${safeString(formattedSearchTerm) ?? ''}%'
+                        --OR product_description ILIKE '%${safeString(formattedSearchTerm) ?? ''}%'
                         ORDER BY name
                         LIMIT 12;`;
 
@@ -111,7 +111,7 @@ export class Products {
 
             return this.executeQuery(query, currentRole, currentRoleId, subscriptionTier, searchType);
         } catch (error) {
-            const errorDetail = `search errored with query: ${query}.\nError: ${(error as Error)?.message}`;
+            const errorDetail = `fulltextSearch errored with query: ${query}.\nError: ${(error as Error)?.message}`;
             console.error(errorDetail);
             return { data: [], query: query, errorDetail: errorDetail, searchType: searchType };
         }
@@ -239,7 +239,43 @@ export class Products {
 
         return this.executeQuery(query, currentRole, currentRoleId, subscriptionTier, searchType);
         } catch (error) {
-            const errorDetail = `semanticSearch errored with query: ${query}.\nError: ${(error as Error)?.message}`;
+            const errorDetail = `hybridSearch errored with query: ${query}.\nError: ${(error as Error)?.message}`;
+            console.error(errorDetail);
+            return { data: [], query: query, errorDetail: errorDetail, searchType: searchType };
+        }
+    }
+
+    async imageSearch(searchUri: string, currentRole: string, currentRoleId: number, subscriptionTier: number) {
+        let query;
+        let searchType = 'IMAGE';
+        try {
+            console.log('using searchUri', searchUri, ' with role: ', currentRole);
+            query = `
+                WITH image_embedding AS (
+                SELECT ai.image_embedding(
+                    model_id => 'multimodalembedding@001',
+                    image => '${safeString(searchUri) ?? ''}',
+                    mimetype => 'image/png')::vector AS embedding
+                ), multimodal_vector_search AS (
+                SELECT product_image_embedding <=> image_embedding.embedding AS distance,
+                    name,
+                    product_image_uri,
+                    brand,
+                    product_description,
+                    category,
+                    department,
+                    cost,
+                    retail_price::MONEY,
+                    sku
+                FROM products, image_embedding
+                ORDER BY distance
+                LIMIT 24
+                ) SELECT RANK () OVER (ORDER BY distance) AS vector_rank, *
+                FROM multimodal_vector_search;`;
+
+            return this.executeQuery(query, currentRole, currentRoleId, subscriptionTier, searchType);
+        } catch (error) {
+            const errorDetail = `imageSearch errored with query: ${query}.\nError: ${(error as Error)?.message}`;
             console.error(errorDetail);
             return { data: [], query: query, errorDetail: errorDetail, searchType: searchType };
         }

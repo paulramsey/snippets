@@ -27,9 +27,9 @@
                 <mat-icon>admin_panel_settings</mat-icon>
                 <span>Admin</span>
             </button>
-            <button mat-menu-item [matMenuTriggerFor]="advisorMenu">
+            <button mat-menu-item [matMenuTriggerFor]="shopperMenu">
                 <mat-icon>supervised_user_circle</mat-icon>
-                <span>Advisor</span>
+                <span>Shopper</span>
             </button>
             <button mat-menu-item [matMenuTriggerFor]="subscriberMenu">
                 <mat-icon>verified_user</mat-icon>
@@ -37,12 +37,12 @@
             </button>
         </mat-menu>
 
-        <mat-menu #advisorMenu="matMenu">
-            <button mat-menu-item (click)="select('Advisor (Paul Ramsey)')">Paul Ramsey</button>
-            <button mat-menu-item (click)="select('Advisor (Evelyn Sterling)')">Evelyn Sterling</button>
-            <button mat-menu-item (click)="select('Advisor (Arthur Kensington)')">Arthur Kensington</button>
-            <button mat-menu-item (click)="select('Advisor (Penelope Wainwright)')">Penelope Wainwright</button>
-            <button mat-menu-item (click)="select('Advisor (Sebastian Thorne)')">Sebastian Thorne</button>
+        <mat-menu #shopperMenu="matMenu">
+            <button mat-menu-item (click)="select('Shopper (Paul Ramsey)')">Paul Ramsey</button>
+            <button mat-menu-item (click)="select('Shopper (Evelyn Sterling)')">Evelyn Sterling</button>
+            <button mat-menu-item (click)="select('Shopper (Arthur Kensington)')">Arthur Kensington</button>
+            <button mat-menu-item (click)="select('Shopper (Penelope Wainwright)')">Penelope Wainwright</button>
+            <button mat-menu-item (click)="select('Shopper (Sebastian Thorne)')">Sebastian Thorne</button>
         </mat-menu>
 
         <mat-menu #subscriberMenu="matMenu">

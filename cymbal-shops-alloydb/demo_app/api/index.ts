@@ -107,6 +107,25 @@ app.get('/api/products/hybrid-search', async (req: express.Request, res: express
   }
 });
 
+/** Find products by image uri */
+app.get('/api/products/image-search', async (req: express.Request, res: express.Response) => {
+  try 
+  {
+    const searchUri: string = req.query.searchUri as string;
+    const currentRole: string = req.query.currentRole as string;
+    const currentRoleId: number = req.query.currentRoleId as unknown as number;
+    const subscriptionTier: number = req.query.subscriptionTier as unknown as number;
+
+    const response = await products.imageSearch(searchUri, currentRole, currentRoleId, subscriptionTier);
+    res.json(response);
+  }
+  catch (err)
+  {
+    console.error('error occurred:', err);
+    res.status(500).send(err);
+  }
+});
+
 /** Find products with natural language prompts 
  *  i.e. /products/natural-search?prompt=hedge%20against%20%high%20inflation */
 app.get('/api/products/natural-search', async (req: express.Request, res: express.Response) => {

@@ -1,0 +1,8 @@
+<mat-card> 
+    <mat-card-header> <mat-card-title>Select an Image</mat-card-title> </mat-card-header> <mat-card-content>
+        <div class="image-selector-container">
+            <div *ngFor="let image of images" class="image-container" (click)="selectImage(image.uri)"
+                [class.selected]="image.uri === selectedImageUri"> <img [src]="image.url" [alt]="image.alt" /> </div>
+        </div>
+    </mat-card-content> 
+</mat-card>
