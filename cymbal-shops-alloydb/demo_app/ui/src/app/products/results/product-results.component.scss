@@ -1,0 +1,132 @@
+@use '../../../styles.scss' as theme;
+@use '@angular/material' as mat; // Defines the 'mat' namespace for Material functions
+$cymbal-theme: theme.$cymbal-theme; // Assign to local variable if using @use with namespace
+
+// --- Extract necessary color palettes and properties from the theme ---
+$primary-palette: map-get(map-get($cymbal-theme, color), primary);
+$accent-palette: map-get(map-get($cymbal-theme, color), accent);
+$warn-palette: map-get(map-get($cymbal-theme, color), warn);
+$foreground: map-get($cymbal-theme, foreground); // Get foreground map (contains text, divider colors)
+$background: map-get($cymbal-theme, background); // Get background map (contains card, background colors)
+
+// --- Define specific shades to use (matching your main theme) ---
+$product-card-bg-shade: 700; // Using the primary default shade from your theme
+$warn-message-shade: 800; // Using the warn default shade from your theme
+
+// --- Get colors from palettes ---
+// Using the primary color (Red 700) for the card background.
+// Consider if this is desired, or if mat.get-color-from-palette($background, card) is better.
+$product-card-bg-color: mat.get-color-from-palette($primary-palette, $product-card-bg-shade);
+// Get the appropriate contrast color (light/dark) for text on the primary background
+$product-card-contrast-color: mat.get-color-from-palette($primary-palette, #{$product-card-bg-shade}-contrast);
+
+// Get the theme's standard divider color
+$divider-color: mat.get-color-from-palette($foreground, divider);
+
+// Get the specific warn color (Red 800)
+$no-results-color: mat.get-color-from-palette($warn-palette, $warn-message-shade);
+
+
+// --- Updated Component Styles ---
+
+.products-container {
+    padding: 15px;
+    display: grid;
+    grid-template-columns: 24% 24% 24% 24%;
+    grid-gap: 1%;
+    place-items: top;
+}
+
+.product-card {
+    // Use the derived primary color for background
+    background-color: $product-card-bg-color;
+    // Use the calculated contrast color for text for better readability
+    color: $product-card-contrast-color;
+    border-radius: 5px;
+    // Use Material's recommended elevation shadow (optional, adjust elevation level 1-24)
+    // box-shadow: map-get(mat.$elevation-z, 4); // Example using elevation z4
+    box-shadow: 0 5px 10px rgba(0, 0, 0, 0.1); // Keep existing if preferred
+    padding: 25px;
+}
+
+// Target the mat-divider component correctly if needed,
+// or style a generic divider within the card
+.product-card .mat-divider, // If using <mat-divider>
+.product-card hr          // If using <hr>
+ {
+    // Use the theme's standard divider color
+    border-top-color: white;
+    margin-top: 10px;
+    margin-bottom: 10px;
+
+}
+
+.productSubtitle {
+    // Color will inherit from .product-card (contrast color)
+    font-weight: 900;
+    font-size: 16px;
+    color: white;
+    //white-space: nowrap; /* Prevent text from wrapping to the next line */
+    //overflow: hidden; /* Hide any overflowing content */
+    //text-overflow: ellipsis; /* Add ellipsis if the text overflows */
+    //display: block;
+
+}
+
+.productDetail {
+    // Note: Theme typography uses "DM Sans". Consider aligning if desired.
+    font-size: 14px;
+    font-weight: 100;
+    font-optical-sizing: auto;
+    color: white;
+}
+
+.productDetailExtended {
+    // Note: Theme typography uses "DM Sans". Consider aligning if desired.
+    font-family: Roboto, sans-serif;
+    font-size: 10px;
+    font-weight: lighter;
+    white-space: nowrap; /* Prevent text from wrapping to the next line */
+    overflow: hidden; /* Hide any overflowing content */
+    text-overflow: ellipsis; /* Add ellipsis if the text overflows */
+    display: block;
+}
+
+.noResults {
+    // Use the theme's warn color
+    color: $no-results-color;
+    font-weight: bold;
+}
+
+img {
+    padding-bottom: 15px;
+}
+
+mat-card {
+    position: relative;
+    float: left;
+}
+
+.price {
+    font-size: 24px;
+    color: gold;
+    display: block;
+    margin-bottom: 10px;
+}
+.retrievalMethod {
+    position: absolute;   // Use absolute positioning
+    bottom: 25px;         // Set distance from the bottom edge (match padding)
+    right: 25px;          // Set distance from the right edge (match padding)
+    font-family: Roboto, sans-serif;
+    font-size: 12px;
+    font-weight: lighter;
+}
+
+.score {
+    position: absolute;   // Use absolute positioning
+    bottom: 25px;         // Set distance from the bottom edge (match padding)
+    left: 25px;          // Set distance from the right edge (match padding)
+    font-family: Roboto, sans-serif;
+    font-size: 12px;
+    font-weight: lighter;
+}

@@ -1,0 +1,38 @@
+<mat-card>
+    <mat-card-title>Product Search</mat-card-title>
+    <mat-radio-group [(ngModel)]="searchType">
+        <mat-radio-button value="{{searchTypes.TRADITIONAL_SQL}}">Traditional SQL</mat-radio-button>
+        <mat-radio-button value="{{searchTypes.FULLTEXT}}">Full-text Search</mat-radio-button>
+        <mat-radio-button value="{{searchTypes.TEXT_EMBEDDINGS}}">Text Embeddings</mat-radio-button>
+        <mat-radio-button value="{{searchTypes.HYBRID}}">Hybrid Search</mat-radio-button>
+        
+        <!-- AlloyDB NL2SQL to be added later
+        <mat-radio-button value="{{searchTypes.NATURAL}}">Natural Language Search</mat-radio-button>
+        @if (currentRole == 'Admin') {
+            <mat-radio-button value="{{searchTypes.FREEFORM}}">Free-form SQL (Protected by PSV)</mat-radio-button>
+        }
+        -->
+    </mat-radio-group>
+    <mat-form-field>
+        <input matInput [(ngModel)]="productSearch" (keydown.enter)="findProducts()"
+            [placeholder]="SEARCH_PLACEHOLDER">
+        <mat-icon matTooltip="Sample suggestion" matSuffix fontSet="material-symbols-outlined"
+                (click)="productSearch = getSuggestion()">
+            prompt_suggestion
+        </mat-icon>
+    </mat-form-field>
+    <mat-card-actions>
+        <button mat-raised-button color="primary" [disabled]="productSearch.length === 0"
+            (click)="findProducts()">
+            @if (loading && searchType == searchTypes.NATURAL) {
+            <div class="inline-spinner">
+                {{LOADING_BUTTON_TEXT}}
+                <mat-spinner matSuffix mode="indeterminate" [diameter]="16"></mat-spinner>
+            </div>
+            } @else {
+                {{BUTTON_TEXT}}
+            }
+        </button>
+    </mat-card-actions>
+    <app-product-results [products]="products"></app-product-results>
+</mat-card>

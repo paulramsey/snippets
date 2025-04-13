@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+
+# Update env variables here
+export REGION="us-central1"
+export ZONE="us-central1-a"
+export IMAGE_BUCKET="genwealth-gen-vid"
+export ALLOYDB_CLUSTER="alloydb-cluster-magic"
+export ALLOYDB_INSTANCE="alloydb-instance-magic"
+
+# Keep all defaults below
+export PROJECT_ID=$(gcloud config get-value project 2>/dev/null)
+export ALLOYDB_IP=$(gcloud alloydb instances describe $ALLOYDB_INSTANCE --cluster=$ALLOYDB_CLUSTER --region=$REGION --view=BASIC --format=json 2>/dev/null | jq -r .publicIpAddress)
+export ALLOYDB_PASSWORD=$(gcloud secrets versions access latest --secret="alloydb-password-$PROJECT_ID")
+export PGPORT=5432
+export PGDATABASE=ecom
+export PGUSER=postgres
+export PGHOST=${ALLOYDB_IP}
+export PGPASSWORD=${ALLOYDB_PASSWORD}
+export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
+export ORGANIZATION=$(gcloud projects get-ancestors ${PROJECT_ID} --format=json | jq -r '.[] | select(.type == "organization").id')
+
+# Temporary - delete later:
+export PROSPECTUS_BUCKET=${PROJECT_ID}-docs
+
+# Prompt for AlloyDB password
+read -r -s -p "Enter password for the postgres database user: " ALLOYDB_PASSWORD
+echo ""

@@ -1,0 +1,76 @@
+<div>
+
+<div *ngIf="data && data.length == 0">
+    <mat-card>
+        <span class="noResults">
+            No results found.
+        </span>
+    </mat-card>
+</div>
+
+<div *ngIf="errorDetail">
+    <app-sql-statement [query]="errorDetail">
+        <p style="color:red;">ERROR: See details</p>
+    </app-sql-statement>
+</div>
+
+<div *ngIf="getSqlQuery">
+    <app-sql-statement [query]="getSqlQuery">
+        -- See Original SQL Query --
+    </app-sql-statement>
+</div>
+
+<div *ngIf="generatedQuery">
+    <app-sql-statement [query]="generatedQuery">
+        -- See Generated SQL Query -- 
+    </app-sql-statement>
+</div>
+
+<div *ngIf="!generatedQuery || generatedQuery && enablePsv">
+  <div *ngIf="query">
+    <app-sql-statement [query]="query">
+        -- See Executed SQL Query <span *ngIf="enablePsv"> &nbsp;(Secured with PSV)&nbsp;</span> --
+    </app-sql-statement>
+  </div>
+</div>
+
+<div *ngIf="data && data.length > 0">
+    @if(data[0].hasOwnProperty('productDescription')) {
+    <div class="products-container">
+        <mat-card *ngFor="let product of data" class="product-card">
+            <span><img src='{{product.productImageUri}}' width=100%></span>
+            <mat-card-subtitle>
+                <span class="price">{{product.retailPrice}}</span>
+                <span class="productSubtitle">{{product.name}}</span>
+                <span class="productDetail">&nbsp; {{product.productDescription}}</span>
+            </mat-card-subtitle>
+            
+            <!--<div class="productDetail" innerHtml="{{product.productDescription | textToHtml}}"></div>-->
+            <span class="productDetailExtended">
+                <!--<mat-divider class="productDivider"></mat-divider>-->
+                <br>Category: {{product.category}}
+                <br>Department: {{product.department}}
+                <br>SKU: {{product.sku}}
+                <br><br><br><br>
+            </span>
+            <span class="retrievalMethod">{{product.retrievalMethod}}</span>
+            @if(data[0].hasOwnProperty('rrfScore')) {
+            <span class="score">Score: {{product.rrfScore}}</span>
+            }
+        </mat-card>
+    </div>
+    } @else {
+        <table mat-table [dataSource]="data">
+            @for (col of getColumns(data[0]); track col; let i = $index) {
+            <ng-container matColumnDef="{{ col }}">
+                <th mat-header-cell *matHeaderCellDef> {{ col }} </th>
+                <td mat-cell *matCellDef="let d"> {{ d[col] }} </td>
+              </ng-container>
+            }
+                <tr mat-header-row *matHeaderRowDef="getColumns(data[0])"></tr>
+                <tr mat-row *matRowDef="let myRowData; columns: getColumns(data[0])"></tr>
+        </table>
+    }
+</div>
+
+</div>
