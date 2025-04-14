@@ -4,9 +4,6 @@
 // Ensure core styles are included once
 @include mat.core();
 
-// Import external stylesheets
-@import 'highlight.js/styles/github.css';
-
 // --- Define palettes based on logo colors ---
 
 // Primary: Red from logo (using mat.$red-palette as base)

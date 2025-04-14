@@ -22,7 +22,6 @@
     "@angular/platform-browser-dynamic": "^17.3.0",
     "@angular/router": "^17.3.0",
     "@openapitools/openapi-generator-cli": "^2.13.5",
-    "highlight.js": "^11.10.0",
     "marked": "^14.1.2",
     "prismjs": "^1.29.0",
     "rxjs": "~7.8.0",
