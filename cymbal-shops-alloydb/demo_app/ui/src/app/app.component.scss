@@ -5,14 +5,51 @@
 .toolbar-logo {
   height: 120px;
   margin-top: 15px;
-  margin-right: 15px;
+  margin-right: 0px;
 }
 
 .small-toolbar-logo {
-  height: 40px;
+  height: 100px;
   margin-top: 5px;
   margin-right: 10px;
 }
+
+.subtitle {
+  margin-left: 0px;
+}
+
+.powered-by-container {
+  margin: 0 15px;
+}
+
+/* ADJUSTED: Styles for the inner span */
+.powered-by {
+  /* Keep existing styles for font-size, gap etc. */
+  font-size: 14px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: rgba(0, 0, 0, 0.7);
+
+  /* Remove properties handled by parent container */
+  /* text-align: center; <-- Remove if parent centers */
+  /* padding: 10px 0; <-- Remove padding if parent centers & aligns */
+  padding: 0; /* Set padding to 0 if alignment/spacing handled by parent flex */
+}
+
+.product-logo {
+  height: 24px; /* Adjust as needed, try values between 18px and 24px */
+}
+
+/* It's also good practice to ensure the direct parent div doesn't interfere */
+/* You might not need this, but sometimes helpful */
+mat-toolbar > div:has(> .powered-by) {
+  display: flex;         /* Make parent div flex */
+  align-items: center;   /* Center the span vertically in its div slot */
+  justify-content: center; /* Center horizontally if needed */
+  height: 100%;          /* Ensure it takes up toolbar height for alignment */
+}
+
 
 .app-title {
   margin-left: 47px;
@@ -28,8 +65,11 @@
   font-weight: bold;
 }
 
+/* Adjust divider height to look balanced with smaller content */
 .mat-divider {
-  height: 75%;
+  height: 50%; /* Adjust percentage as needed */
+  margin-top: auto; /* Helps center divider vertically */
+  margin-bottom: auto; /* Helps center divider vertically */
   margin-right: 25px;
   margin-left: 25px;
 }

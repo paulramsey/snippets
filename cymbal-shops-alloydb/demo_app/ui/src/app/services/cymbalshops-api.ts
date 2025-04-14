@@ -118,9 +118,6 @@ export class RoleService {
       ["Shopper (Arthur Kensington)", [3, 2]],
       ["Shopper (Penelope Wainwright)", [4, 2]],
       ["Shopper (Sebastian Thorne)", [5, 2]],
-      ["Subscriber (Basic)", [999, 0]],
-      ["Subscriber (Intermediate)", [999, 1]],
-      ["Subscriber (Premium)", [999, 2]],
       ["Admin", [0, 2]]
     ]);
   

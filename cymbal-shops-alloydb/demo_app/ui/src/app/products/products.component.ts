@@ -210,19 +210,19 @@ export class ProductsComponent implements OnInit {
   getSuggestion() {
     switch (this.searchType) {
       case SearchType.TRADITIONAL_SQL:
-        return "Coach";
+        return "Black belt";
+      case SearchType.FULLTEXT:
+        return "Black belt";
       case SearchType.TEXT_EMBEDDINGS:
         return "Coach purse";
-      case SearchType.FULLTEXT:
-        return "Coach -purse";
-      case SearchType.NATURAL:
-        return "What are some popular purses my wife might like?";
-      case SearchType.FREEFORM:
-        return "SELECT * FROM products LIMIT 5;";
       case SearchType.HYBRID:
         return "Coach purse";
       case SearchType.IMAGE:
         return "gs://pr-public-demo-data/alloydb-retail-demo/user_photos/1.png";
+      case SearchType.NATURAL:
+        return "What are some popular purses my wife might like?";
+      case SearchType.FREEFORM:
+        return "SELECT * FROM products LIMIT 5;";
       default:
         return '';
     }

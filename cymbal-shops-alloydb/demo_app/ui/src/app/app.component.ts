@@ -23,6 +23,8 @@ import { MatDialog, MAT_DIALOG_DATA } from '@angular/material/dialog';
 import { MarkdownViewerComponent } from './common/markdown-viewer/markdown-viewer.component';
 import { HttpClient } from '@angular/common/http';
 
+import { ArchitectureComponent } from './architecture/architecture.component';
+
 @Component({
   selector: 'app-root',
   standalone: true,
@@ -39,6 +41,7 @@ import { HttpClient } from '@angular/common/http';
     MatDividerModule,
     MatMenuModule,
     MarkdownViewerComponent,
+    ArchitectureComponent,
   ],
   templateUrl: './app.component.html',
   styleUrl: './app.component.scss',
@@ -90,13 +93,10 @@ export class AppComponent implements OnInit {
     this.RoleService.updateRole(this.currentRoleMap);
   }
 
-  openArchitectureDialog(markdownPath: string) {
-    this.dialog.open(MarkdownViewerComponent, { 
+  openArchitectureDialog() {
+    this.dialog.open(ArchitectureComponent, { 
       height: '90%',
-      width: '90%',
-      data: { 
-        markdownSource: this.http.get(markdownPath, { responseType: 'text' }) 
-      }
+      width: '90%'
     });
   }
 

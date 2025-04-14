@@ -74,7 +74,7 @@ export class Products {
                         OR category ILIKE '%${safeString(formattedSearchTerm) ?? ''}%'
                         OR brand ILIKE '%${safeString(formattedSearchTerm) ?? ''}%'
                         OR department ILIKE '%${safeString(formattedSearchTerm) ?? ''}%'
-                        --OR product_description ILIKE '%${safeString(formattedSearchTerm) ?? ''}%'
+                        OR product_description ILIKE '%${safeString(formattedSearchTerm) ?? ''}%'
                         ORDER BY name
                         LIMIT 12;`;
 
