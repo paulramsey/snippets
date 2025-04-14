@@ -19,9 +19,10 @@ export PGPASSWORD=${ALLOYDB_PASSWORD}
 export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
 export ORGANIZATION=$(gcloud projects get-ancestors ${PROJECT_ID} --format=json | jq -r '.[] | select(.type == "organization").id')
 
-# Temporary - delete later:
-export PROSPECTUS_BUCKET=${PROJECT_ID}-docs
-
 # Prompt for AlloyDB password
-read -r -s -p "Enter password for the postgres database user: " ALLOYDB_PASSWORD
-echo ""
+if [[ -z "$ALLOYDB_PASSWORD" ]]; then
+  # If it's empty/unset, prompt the user
+  read -r -s -p "Enter password for the postgres database user: " ALLOYDB_PASSWORD
+  # Add a newline after the prompt for cleaner output, only if we prompted
+  echo ""
+fi

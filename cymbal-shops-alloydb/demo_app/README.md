@@ -1,4 +1,4 @@
-# CymbalShops Demo App
+# CymbalShops StyleSearch Demo App
 
 ## Requirements
 - Node 20+
@@ -40,21 +40,54 @@ app.use(express.static(staticPath));
 
 ## Run the application
 ```bash
--- clone this repository
+# Clone this repository
+git clone http://github.com/paulramsey/snippets.git
+cd snippets
 
+# Run: 
+cd cymbal-shops-alloydb/demo_app/api/
 npm install
+npm start
 
+# Open and another shell and run:
+cd cymbal-shops-alloydb/demo_app/ui/
+npm install
 npm start
 ```
 
 ## Deploying the application
 
+> NOTE: This works best from CloudShell. 
+
 1. Clone this repository:
 ```bash
 git clone http://github.com/paulramsey/snippets.git
+cd snippets
 ```
 
-1. **IMPORTANT** Set values in the `./env.sh` file for your environment
+2. Authenticate to Google Cloud
+```bash
+gcloud auth login
+gcloud auth application-default login
+```
+
+3. Set your project context
+```bash
+gcloud config set project <PROJECT_ID>
+gcloud config list project
+```
+
+4. **IMPORTANT** Set values in the `./env.sh` file for your environment, then run:
+```bash
+cd cymbal-shops-alloydb/demo_app
+source ./env.sh # Enter your AlloyDB password when prompted
+source ./install.sh
+```
+
+5. Deploy the application:
+```bash
+source ./install.sh
+```
 
 ## Request Flow
 
