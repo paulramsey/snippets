@@ -9,7 +9,7 @@ export ALLOYDB_INSTANCE="alloydb-instance-magic"
 
 # Keep all defaults below
 export PROJECT_ID=$(gcloud config get-value project 2>/dev/null)
-export ALLOYDB_IP=$(gcloud alloydb instances describe $ALLOYDB_INSTANCE --cluster=$ALLOYDB_CLUSTER --region=$REGION --view=BASIC --format=json 2>/dev/null | jq -r .publicIpAddress)
+export ALLOYDB_IP=$(gcloud alloydb instances describe $ALLOYDB_INSTANCE --cluster=$ALLOYDB_CLUSTER --region=$REGION --view=BASIC --format=json 2>/dev/null | jq -r .ipAddress)
 export ALLOYDB_PASSWORD=$(gcloud secrets versions access latest --secret="alloydb-password-$PROJECT_ID")
 export PGPORT=5432
 export PGDATABASE=ecom
