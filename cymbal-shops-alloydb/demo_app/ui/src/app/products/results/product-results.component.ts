@@ -88,7 +88,7 @@ export class ProductResultsComponent implements OnInit {
 
             // --- 1. Modify productImageUri (existing logic) ---
             const stringToReplace = 'gs://genwealth-gen-vid';
-            const replacementString = 'https://storage.cloud.google.com/pr-public-demo-data/alloydb-retail-demo';
+            const replacementString = 'https://storage.googleapis.com/pr-public-demo-data/alloydb-retail-demo';
             if (modifiedProduct.productImageUri && typeof modifiedProduct.productImageUri === 'string') {
               modifiedProduct.productImageUri = modifiedProduct.productImageUri.replace(stringToReplace, replacementString);
             }
@@ -148,7 +148,7 @@ export class ProductResultsComponent implements OnInit {
     // --- Apply .replace() logic here ---
     if (value) {
 
-       this.displaySearchQuery = value.replace('gs://pr-public-demo-data', 'https://storage.cloud.google.com/pr-public-demo-data');
+       this.displaySearchQuery = value.replace('gs://pr-public-demo-data', 'https://storage.googleapis.com/pr-public-demo-data');
 
     } else {
       this.displaySearchQuery = undefined; // Handle null/undefined input
