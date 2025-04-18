@@ -6,6 +6,8 @@ export ZONE="us-central1-a"
 export IMAGE_BUCKET="genwealth-gen-vid"
 export ALLOYDB_CLUSTER="alloydb-cluster-magic"
 export ALLOYDB_INSTANCE="alloydb-instance-magic"
+export VPC_NETWORK=demo-vpc
+
 
 # Keep all defaults below
 export PROJECT_ID=$(gcloud config get-value project 2>/dev/null)
@@ -18,6 +20,8 @@ export PGHOST=${ALLOYDB_IP}
 export PGPASSWORD=${ALLOYDB_PASSWORD}
 export PROJECT_NUMBER=$(gcloud projects describe $PROJECT_ID --format="value(projectNumber)")
 export ORGANIZATION=$(gcloud projects get-ancestors ${PROJECT_ID} --format=json | jq -r '.[] | select(.type == "organization").id')
+export VPC_SUBNET=$VPC_NETWORK
+export VPC_NAME=$VPC_NETWORK
 
 # Prompt for AlloyDB password
 if [[ -z "$ALLOYDB_PASSWORD" ]]; then
