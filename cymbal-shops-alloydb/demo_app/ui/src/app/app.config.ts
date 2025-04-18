@@ -12,7 +12,7 @@ export const appConfig: ApplicationConfig = {
     provideRouter(routes), provideAnimationsAsync(),
     {
       provide: BASE_URL,
-      useValue: 'http://localhost:8080/api'
+      useValue: '/api'
     },
     importProvidersFrom(HttpClientModule)
 
