@@ -19,6 +19,7 @@ The project provides resources to set up and explore AlloyDB AI features:
 
 ## Project Structure
 
+```
 cymbal-shops-alloydb/
 │
 ├── cymbal_shops_hybrid_search_alloydb_data_prep.ipynb  # Notebook 1: Full data prep (embeddings, FTS, etc.)
@@ -33,6 +34,7 @@ cymbal-shops-alloydb/
 │   └── README.md                                       # README for the demo application
 │
 └── README.md                                           # This file
+```
 
 
 ## Getting Started
