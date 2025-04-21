@@ -8,11 +8,17 @@ export ALLOYDB_CLUSTER="alloydb-cluster-magic"
 export ALLOYDB_INSTANCE="alloydb-instance-magic"
 export VPC_NETWORK=demo-vpc
 
+# Prompt for AlloyDB password
+if [[ -z "$ALLOYDB_PASSWORD" ]]; then
+  # If it's empty/unset, prompt the user
+  read -r -s -p "Enter password for the postgres database user: " ALLOYDB_PASSWORD
+  # Add a newline after the prompt for cleaner output, only if we prompted
+  echo ""
+fi
 
 # Keep all defaults below
 export PROJECT_ID=$(gcloud config get-value project 2>/dev/null)
 export ALLOYDB_IP=$(gcloud alloydb instances describe $ALLOYDB_INSTANCE --cluster=$ALLOYDB_CLUSTER --region=$REGION --view=BASIC --format=json 2>/dev/null | jq -r .ipAddress)
-export ALLOYDB_PASSWORD=$(gcloud secrets versions access latest --secret="alloydb-password-$PROJECT_ID")
 export PGPORT=5432
 export PGDATABASE=ecom
 export PGUSER=postgres
@@ -23,10 +29,3 @@ export ORGANIZATION=$(gcloud projects get-ancestors ${PROJECT_ID} --format=json 
 export VPC_SUBNET=$VPC_NETWORK
 export VPC_NAME=$VPC_NETWORK
 
-# Prompt for AlloyDB password
-if [[ -z "$ALLOYDB_PASSWORD" ]]; then
-  # If it's empty/unset, prompt the user
-  read -r -s -p "Enter password for the postgres database user: " ALLOYDB_PASSWORD
-  # Add a newline after the prompt for cleaner output, only if we prompted
-  echo ""
-fi
