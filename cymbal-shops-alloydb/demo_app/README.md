@@ -81,7 +81,6 @@ gcloud config list project
 ```bash
 cd cymbal-shops-alloydb/demo_app
 source ./env.sh # Enter your AlloyDB password when prompted
-source ./install.sh
 ```
 
 5. Deploy the application:
