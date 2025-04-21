@@ -27,15 +27,15 @@ export class ArchitectureComponent {
     {
       methodName: 'Traditional SQL',
       strengths: [
-        'Simple to implement for basic keyword checks (`=` or `LIKE \'term%\'`).',
+        'Simple to implement for basic keyword checks (`=` or `ILIKE \'term%\'`).',
         'Fast for exact matches on indexed fields (e.g., SKU, exact name).',
         'Easily integrates with strict attribute filtering (price, category, brand) via `WHERE` clause.',
         'Low infrastructure overhead beyond the primary database.'
       ],
       weaknesses: [
-        'Poor relevance; no understanding of user intent, synonyms, context, or semantics.',
+        'No relevance ranking; no understanding of user intent, synonyms, context, or semantics.',
         'Very sensitive to typos, pluralization, and phrasing variations.',
-        '`LIKE \'%term%\'` queries are slow and don\'t scale well.', // Escaped quote
+        '`ILIKE \'%term%\'` queries are slow and don\'t scale well.', // Escaped quote
         'Struggles with matching within long descriptions or multiple fields effectively.',
         'Requires users to know specific terms.'
       ]
@@ -43,7 +43,7 @@ export class ArchitectureComponent {
     {
       methodName: 'Full-Text Search',
       strengths: [
-        'Faster keyword search than `LIKE \'%term%\'` using inverted indexes.', // Escaped quote
+        'Faster keyword search than `ILIKE \'%term%\'` using inverted indexes.', // Escaped quote
         'Handles basic linguistic variations (stemming, stop words).',
         'Provides basic relevance ranking (e.g., TF-IDF).',
         'Can search across multiple text fields efficiently.',
@@ -58,21 +58,6 @@ export class ArchitectureComponent {
       ]
     },
     {
-      methodName: 'BM25',
-      strengths: [
-        'State-of-the-art *lexical* relevance ranking algorithm (often used *within* Full-Text Search engines).',
-        'Generally better relevance than basic TF-IDF by considering term frequency saturation and document length.',
-        'Tunable parameters (k1, b) for optimization.',
-        'Robust handling of keyword importance.'
-      ],
-      weaknesses: [
-        'Still fundamentally keyword/term-based; no deep semantic understanding.',
-        'Doesn\'t inherently understand synonyms, context, or user intent beyond keywords.',
-        'Not effective for zero-shot queries (finding concepts via different wording).',
-        'Typically implemented as part of a larger FTS system, not standalone.'
-      ]
-    },
-    {
       methodName: 'Text Embeddings',
       strengths: [
         'Excellent semantic understanding; finds relevant products based on meaning, even with different keywords.',
@@ -83,19 +68,18 @@ export class ArchitectureComponent {
       weaknesses: [
         'Can struggle with precise keyword matching (e.g., finding a specific model number if semantic similarity is low).',
         'Requires generating embeddings (ML model inference - compute cost).',
-        'Needs specialized vector database or index (e.g., using ANN algorithms like HNSW) for efficient search at scale.',
-        'Harder to integrate precise attribute filtering *during* the vector search (often done as post-filtering).',
+        'Needs specialized vector database or index (e.g., using ANN algorithms like ScaNN, HNSW) for efficient search at scale.',
         'Can sometimes return results that are *too* broad or conceptually related but functionally wrong.'
       ]
     },
      {
       methodName: 'Hybrid Search',
       strengths: [
-        'Combines keyword precision (FTS/BM25) with semantic understanding (Embeddings).',
+        'Combines keyword precision (SQL/FTS) with semantic understanding (Embeddings).',
         'Generally provides the highest overall relevance across diverse query types.',
         'Robust to keyword-heavy queries, natural language, typos (via FTS), and conceptual search (via embeddings).',
         'Mitigates the weaknesses of using either keyword or semantic search alone.',
-        'Techniques like RRF allow effective merging of results.'
+        'Techniques like Reciprocal Rank Fusion (RRF) allow effective merging of results.'
       ],
       weaknesses: [
         'Most complex to implement, tune, and maintain (requires managing/scaling both FTS and Vector indexes).',

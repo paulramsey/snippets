@@ -10,6 +10,8 @@ This directory contains the source code for the Cymbal Shops demo application, w
 
 ## Architecture
 
+![image](./ui/src/assets/architecture.png)
+
 * **Frontend**: Angular 17+ user interface (`ui/`).
 * **Backend**: Node.js 20+ using Express (`api/`).
     * Serves the static Angular UI files.
