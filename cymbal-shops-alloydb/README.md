@@ -75,3 +75,11 @@ Contributions are welcome!
 ## License
 
 Please refer to the LICENSE file for details.
+
+## Disclaimer
+
+This is **NOT** an officially supported Google product.
+
+This software is provided "as is", without warranty of any kind, expressed or implied, including but not limited to, the warranties of merchantability, fitness for a particular purpose, and/or infringement.
+
+See LICENSE file for additional details.
