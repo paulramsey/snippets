@@ -219,7 +219,10 @@ resource "google_compute_network_attachment" "default" {
   subnetworks = [
     "projects/${var.gcp_project_id}/regions/${var.region}/subnetworks/demo-vpc"
   ]
-  depends_on = [google_project_service.apis]
+  depends_on = [
+    google_project_service.apis,
+    google_compute_network.demo_vpc
+  ]
 }
 
 # Create an Internal IP for the PSC Endpoint
@@ -230,6 +233,10 @@ resource "google_compute_address" "psc_endpoint_ip" {
   # So there IS a subnet named "demo-vpc" in var.region.
   subnetwork   = "projects/${var.gcp_project_id}/regions/${var.region}/subnetworks/demo-vpc"
   address_type = "INTERNAL"
+  depends_on = [
+    google_project_service.apis,
+    google_compute_network.demo_vpc
+  ]
 }
 
 # Create the PSC Forwarding Rule (Endpoint)
