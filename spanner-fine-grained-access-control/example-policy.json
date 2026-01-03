@@ -1,0 +1,24 @@
+{
+  "bindings": [
+    {
+      "condition": {
+        "expression": "resource.name.endsWith('/databaseRoles/SpannerDatabaseRole')",
+        "title": "Access to SpannerDatabaseRole"
+      },
+      "members": [
+        "serviceAccount:test-service-account@your-project.iam.gserviceaccount.com",
+        "serviceAccount:test-service-account-2@your-project.iam.gserviceaccount.com"
+      ],
+      "role": "roles/spanner.databaseRoleUser"
+    },
+    {
+      "members": [
+        "serviceAccount:test-service-account@your-project.iam.gserviceaccount.com",
+        "serviceAccount:test-service-account-2@your-project.iam.gserviceaccount.com"
+      ],
+      "role": "roles/spanner.fineGrainedAccessUser"
+    }
+  ],
+  "etag": "AwZHg8jH39s=",
+  "version": 3
+}
