@@ -1,6 +1,6 @@
 # Spanner Fine-Grained Access Control (FGAC) Guide
 
-This guide details how to enable and test Fine-Grained Access Control (FGAC) on a Google Cloud Spanner instance using `gcloud`, assigning permissions directly to Service Accounts.
+This guide details how to enable and test Fine-Grained Access Control (FGAC) on a Google Cloud Spanner instance using `gcloud`. It also demonstrates how to update the IAM policy to add additional principals to a Database Role.
 
 ## Prerequisites
 
