@@ -17,14 +17,21 @@ export DATABASE_ID="your-database"
 export SA_NAME="test-service-account"
 export SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 export DB_ROLE="SpannerDatabaseRole"
+```
 
+## Authenticate
 
+```bash
 # Authenticate with gcloud (interactive)
 gcloud auth login
+```
 
+```bash
 # Configure Application Default Credentials (ADC)
 gcloud auth application-default login
+```
 
+```bash
 # Set the quota project for ADC
 gcloud auth application-default set-quota-project $PROJECT_ID
 
