@@ -6,7 +6,7 @@ This guide details how to enable and test Fine-Grained Access Control (FGAC) on 
 
 - Access to a Google Cloud Project with the Spanner API enabled.
 - Permissions to manage IAM Service Accounts and Spanner Database IAM policies.
-- `gcloud` CLI installed and authenticated.
+- `gcloud` CLI installed.
 
 ## Setup Variables
 
@@ -18,7 +18,17 @@ export SA_NAME="test-service-account"
 export SA_EMAIL="${SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 export DB_ROLE="SpannerDatabaseRole"
 
-# Set default project
+
+# Authenticate with gcloud (interactive)
+gcloud auth login
+
+# Configure Application Default Credentials (ADC)
+gcloud auth application-default login
+
+# Set the quota project for ADC
+gcloud auth application-default set-quota-project $PROJECT_ID
+
+# Set default project in gcloud config
 gcloud config set project $PROJECT_ID
 
 # Navigate to the project directory
@@ -72,7 +82,7 @@ gcloud spanner databases ddl update $DATABASE_ID \
 ```
 
 ### 2. Grant Permissions to the Role
-Grant `READ` (SELECT), `INSERT`, and `UPDATE`, but **not** `DELETE`.
+Grant `SELECT`, `INSERT`, and `UPDATE`, but **not** `DELETE`.
 ```bash
 gcloud spanner databases ddl update $DATABASE_ID \
     --instance=$INSTANCE_ID \
