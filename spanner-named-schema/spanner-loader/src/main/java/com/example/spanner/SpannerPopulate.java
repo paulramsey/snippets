@@ -13,15 +13,17 @@ import java.util.Random;
 
 public class SpannerPopulate {
 
-  static final String PROJECT_ID = "spanner-ns";
   static final String INSTANCE_ID = "dev-instance";
   static final String DATABASE_ID = "dev-db";
   static final String TABLE_NAME = "ns.test_table";
 
   public static void main(String[] args) {
-    SpannerOptions options = SpannerOptions.newBuilder().setProjectId(PROJECT_ID).build();
+    SpannerOptions options = SpannerOptions.newBuilder().build();
+    String projectId = options.getProjectId();
+    System.out.println("Using Project ID: " + projectId);
+
     try (Spanner spanner = options.getService()) {
-      DatabaseId db = DatabaseId.of(PROJECT_ID, INSTANCE_ID, DATABASE_ID);
+      DatabaseId db = DatabaseId.of(projectId, INSTANCE_ID, DATABASE_ID);
       DatabaseClient dbClient = spanner.getDatabaseClient(db);
 
       List<Mutation> mutations = new ArrayList<>();
