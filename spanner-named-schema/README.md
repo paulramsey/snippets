@@ -99,3 +99,11 @@ You can verify the data in Spanner using `gcloud` or the Console:
 gcloud spanner databases execute-sql dev-db --instance=dev-instance \
   --sql="SELECT * FROM ns.test_table LIMIT 5"
 ```
+
+## Cleanup
+
+Delete the Spanner instance to avoid incurring charges:
+
+```bash
+gcloud spanner instances delete dev-instance --quiet
+```
