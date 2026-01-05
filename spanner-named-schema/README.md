@@ -23,6 +23,32 @@ This snippet demonstrates how to set up a Google Cloud Spanner environment with 
 - **Java 21+** (Verified with JDK 25).
 - **Maven** (3.9.9+).
 
+## Setup Variables
+
+```bash
+export PROJECT_ID="your-project-id"
+```
+
+## Authenticate
+
+```bash
+# Authenticate with gcloud (interactive)
+gcloud auth login
+```
+
+```bash
+# Configure Application Default Credentials (ADC)
+gcloud auth application-default login
+```
+
+```bash
+# Set the quota project for ADC
+gcloud auth application-default set-quota-project $PROJECT_ID
+
+# Set default project in gcloud config
+gcloud config set project $PROJECT_ID
+```
+
 ## Infrastructure Setup
 
 1. **Enable APIs**:
@@ -39,6 +65,7 @@ This snippet demonstrates how to set up a Google Cloud Spanner environment with 
 3. **Apply Schema**:
    The schema includes the named schema `ns`, sequence `my_seq`, and table `ns.test_table`.
    ```bash
+   cd spanner-named-schema
    gcloud spanner databases ddl update dev-db --instance=dev-instance --ddl-file=schema.ddl
    ```
 
