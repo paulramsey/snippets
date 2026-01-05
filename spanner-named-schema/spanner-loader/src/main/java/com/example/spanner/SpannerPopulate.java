@@ -28,21 +28,26 @@ public class SpannerPopulate {
       Random random = new Random();
 
       System.out.println("Generating mutations...");
-      for (int i = 0; i < 100; i++) {
-        mutations.add(
-            Mutation.newInsertBuilder(TABLE_NAME)
-                // id (PK) is omitted to use DEFAULT (GENERATE_UUID())
-                // seq is omitted to use DEFAULT (BIT_REVERSE(SEQUENCE))
-                .set("col_a").to("Record " + i)
-                .set("col_b").to(i)
-                .set("col_c").to(random.nextBoolean())
-                .set("last_updated").to(Value.COMMIT_TIMESTAMP)
-                .build());
+      // Looping logic: Perform 10 iterations
+      for (int batch = 0; batch < 10; batch++) {
+        // Collect 10,000 mutations to send in a single write operation
+        for (int i = 0; i < 10000; i++) {
+          mutations.add(
+              Mutation.newInsertBuilder(TABLE_NAME)
+                  // id (PK) is omitted to use DEFAULT (GENERATE_UUID())
+                  // seq is omitted to use DEFAULT (BIT_REVERSE(SEQUENCE))
+                  .set("col_a").to("Record " + (batch * 10000 + i))
+                  .set("col_b").to(batch * 10000 + i)
+                  .set("col_c").to(random.nextBoolean())
+                  .set("last_updated").to(Value.COMMIT_TIMESTAMP)
+                  .build());
+        }
+        // Write the batch of 10,000 mutations to Spanner
+        Timestamp commitTimestamp = dbClient.write(mutations);
+        System.out.printf("Wrote %d records at %s%n", mutations.size(), commitTimestamp.toString());
+        mutations.clear();
       }
 
-      System.out.println("Writing " + mutations.size() + " mutations...");
-      Timestamp commitTimestamp = dbClient.write(mutations);
-      System.out.printf("Written %d records at %s%n", mutations.size(), commitTimestamp.toString());
     } catch (Exception e) {
       e.printStackTrace();
     }

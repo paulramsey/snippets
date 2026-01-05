@@ -14,7 +14,7 @@ This snippet demonstrates how to set up a Google Cloud Spanner environment with 
 
 - **Data Loader**:
   - A Java application using `google-cloud-spanner` library.
-  - Inserts 100 records using **Mutations** (not DML).
+  - Inserts **100,000 records** total (10 batches of 10,000) using **Mutations**.
   - Uses `Value.COMMIT_TIMESTAMP` for the timestamp column.
 
 ## Prerequisites
@@ -59,8 +59,9 @@ The data loader is a Maven project located in `spanner-loader/`.
    **Expected Output**:
    ```
    Generating mutations...
-   Writing 100 mutations...
-   Written 100 records at <Timestamp>
+   Wrote 10000 records at 2026-01-05T20:40:00.123456000Z
+   Wrote 10000 records at 2026-01-05T20:40:01.123456000Z
+   ... (repeats for 10 batches)
    ```
 
 ## Verification
