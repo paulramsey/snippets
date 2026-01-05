@@ -19,7 +19,7 @@ This snippet demonstrates how to set up a Google Cloud Spanner environment with 
 
 ## Prerequisites
 
-- **Google Cloud SDK (`gcloud`)** authenticated and configured with your project.
+- **Google Cloud SDK (`gcloud`)** installed.
 - **Java 21+** (Verified with JDK 25).
 - **Maven** (3.9.9+).
 
