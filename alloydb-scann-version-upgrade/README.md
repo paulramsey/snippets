@@ -1,4 +1,4 @@
-# AlloyDB ScaNN ExtensionVersion Upgrade
+# AlloyDB ScaNN Extension Version Upgrade
 
 This document demonstrates the process of upgrading the `alloydb_scann` and `vector` extensions in AlloyDB. It covers verifying the upgrade with a test query, optionally rebuilding the index online, and optionally renaming the index to its original name for ease of use and query hinting.
 
