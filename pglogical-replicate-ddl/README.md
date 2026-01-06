@@ -13,3 +13,9 @@ Create the trigger, then test by creatinga  new table and adding some data, like
 CREATE TABLE IF NOT EXISTS public.test_table_2 (col1 INT PRIMARY KEY);
 INSERT INTO test_table_2 VALUES (1),(2),(3);
 ```
+
+## Disclaimer
+
+This is not an officially supported Google product.
+
+This software is provided "as is", without warranty of any kind, expressed or implied, including but not limited to, the warranties of merchantability, fitness for a particular purpose, and/or infringement.

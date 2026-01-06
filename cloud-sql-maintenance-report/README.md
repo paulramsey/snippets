@@ -88,3 +88,9 @@ The function uses a heuristic to classify updates:
     *   **MINOR_VERSION_UPGRADE**: If the base versions differ (e.g., `POSTGRES_14_4` != `POSTGRES_14_5`).
 
 *Note: The actual availability of `availableMaintenanceVersions` depends on the specific Cloud SQL instance state and API response.*
+
+## Disclaimer
+
+This is not an officially supported Google product.
+
+This software is provided "as is", without warranty of any kind, expressed or implied, including but not limited to, the warranties of merchantability, fitness for a particular purpose, and/or infringement.

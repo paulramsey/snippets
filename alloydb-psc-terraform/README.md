@@ -121,3 +121,9 @@ gcloud projects delete YOUR_PROJECT_ID
 ```
 
 Alternatively, you can run `terraform destroy`, but deleting the project is the safest way to ensure nothing is left behind associated with the environment.
+
+## Disclaimer
+
+This is not an officially supported Google product.
+
+This software is provided "as is", without warranty of any kind, expressed or implied, including but not limited to, the warranties of merchantability, fitness for a particular purpose, and/or infringement.
