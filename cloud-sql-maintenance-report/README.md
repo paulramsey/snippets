@@ -14,7 +14,7 @@ export SERVICE_ACCOUNT_EMAIL="your-service-account@${PROJECT_ID}.iam.gserviceacc
 
 # Application Configuration
 export TARGET_PROJECTS="project-a,project-b"  # Comma-separated list of projects to scan
-export OUTPUT_BUCKET="your-report-bucket"    # Optional: GCS bucket for reports
+export OUTPUT_BUCKET="${PROJECT_ID}-cloud-sql-report"    # Optional: GCS bucket for reports
 
 # Scheduler Configuration
 export SCHEDULER_JOB_NAME="maintenance-weekly-scan"
@@ -22,13 +22,31 @@ export SCHEDULER_SA_EMAIL="your-scheduler-sa@${PROJECT_ID}.iam.gserviceaccount.c
 export FUNCTION_NAME="cloud-sql-maintenance-reporter"
 ```
 
-## Setup (Optional)
+## Authenticate
+
+```bash
+# Authenticate with gcloud (interactive)
+gcloud auth login
+```
+
+```bash
+# Configure Application Default Credentials (ADC)
+gcloud auth application-default login
+```
+
+```bash
+# Set the quota project for ADC
+gcloud auth application-default set-quota-project $PROJECT_ID
+
+# Set default project in gcloud config
+gcloud config set project $PROJECT_ID
+```
+
+## GCS Bucket Setup (Optional)
 
 If you plan to save the reports to GCS, create a bucket for them:
 
 ```bash
-# Set the bucket name (must be globally unique)
-export OUTPUT_BUCKET="${PROJECT_ID}-cloud-sql-report"
 
 # Create the bucket
 gcloud storage buckets create gs://$OUTPUT_BUCKET --project=$PROJECT_ID --location=$REGION --uniform-bucket-level-access
@@ -88,6 +106,27 @@ The function uses a heuristic to classify updates:
     *   **MINOR_VERSION_UPGRADE**: If the base versions differ (e.g., `POSTGRES_14_4` != `POSTGRES_14_5`).
 
 *Note: The actual availability of `availableMaintenanceVersions` depends on the specific Cloud SQL instance state and API response.*
+
+## Cleanup
+
+To avoid incurring charges, delete the resources created in this tutorial:
+
+```bash
+# Delete the Cloud Scheduler job
+gcloud scheduler jobs delete $SCHEDULER_JOB_NAME \
+    --project $PROJECT_ID \
+    --location $REGION \
+    --quiet
+
+# Delete the Cloud Function
+gcloud functions delete $FUNCTION_NAME \
+    --project $PROJECT_ID \
+    --region $REGION \
+    --quiet
+
+# (Optional) Delete the GCS bucket and all reports
+gcloud storage rm -r gs://$OUTPUT_BUCKET --project=$PROJECT_ID --quiet
+```
 
 ## Disclaimer
 
