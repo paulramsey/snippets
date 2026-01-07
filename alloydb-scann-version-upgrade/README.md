@@ -142,6 +142,44 @@ CREATE INDEX CONCURRENTLY embedding_scann_2 ON products
   WITH (num_leaves=2);
 ```
 
+## Insert Data While Index Builds
+
+To verify that the `CONCURRENTLY` option allows write operations to proceed while the index is being built, run the following `INSERT` statement in a separate session immediately after starting the index build:
+
+```sql
+INSERT INTO products (
+    id, 
+    cost, 
+    category, 
+    name, 
+    brand, 
+    retail_price, 
+    department, 
+    sku, 
+    distribution_center_id, 
+    product_description
+) VALUES (
+    '9999999', 
+    7.016489915, 
+    'Socks & Hosiery', 
+    'Bag Snag Sparrows All Over Funky Knee High Socks', 
+    'Bag Snag', 
+    19.989999771, 
+    'Women', 
+    'BF65417DCECC7F2B0006E1F5793B7143', 
+    4, 
+    'Take flight with our Bag Snag Sparrows Knee High Socks! These aren''t your average socks; they''re a whimsical statement piece featuring a playful all-over sparrow design. Add a touch of quirky charm to any outfit while enjoying the cozy comfort of these fun, funky socks. You''ll love showing off your personality from your toes up!'
+);
+```
+
+### Cleanup Test Data
+
+After checking that the row was successfully inserted, you can delete it:
+
+```sql
+DELETE FROM products WHERE id = '9999999';
+```
+
 ## Run Query While Index Builds
 
 ### Plan
