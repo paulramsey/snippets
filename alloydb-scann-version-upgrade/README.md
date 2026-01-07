@@ -137,7 +137,7 @@ Execution Time: 44.848 ms
 Create index embedding_scann_2 concurrently so that the other index remains in use during this long-running operation.
 
 ```sql
-CREATE INDEX embedding_scann ON products  
+CREATE INDEX CONCURRENTLY embedding_scann_2 ON products  
   USING scann (product_embedding cosine)  
   WITH (num_leaves=2);
 ```
