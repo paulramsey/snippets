@@ -223,11 +223,15 @@ def extract_vehicle_info(file_path: str, content_type: str) -> dict:
         gemini_metadata = json.loads(response.text)
     except Exception as e:
         print(f"Error calling Gemini for metadata extraction: {e}")
-                # we might want to guess make if possible, but for now just getting Model is good.
-                # Actually, the user's regex requirement was just Year/Model.
-                
-                # If Make is missing but we found Model "f150" or similar, Gemini might have missed it too.
-                # But let's stick to the requested file name regex for Year/Model.
 
-    return result
+    # Merge: Regex overrides Gemini for Year/Model
+    final_result = gemini_metadata.copy()
+    
+    if regex_metadata["year"]:
+        final_result["year"] = regex_metadata["year"]
+        
+    if regex_metadata["model"]:
+        final_result["model"] = regex_metadata["model"]
+
+    return final_result
 
