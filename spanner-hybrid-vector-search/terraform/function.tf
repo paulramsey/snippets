@@ -16,7 +16,7 @@ resource "google_cloudfunctions2_function" "doc_processor" {
   description = "Processes uploaded documents and writes embeddings to Spanner"
 
   build_config {
-    runtime     = "python310"
+    runtime     = "python314"
     entry_point = "process_document_event" # Will be defined in main.py
     source {
       storage_source {

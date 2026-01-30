@@ -41,10 +41,10 @@ def clean_metadata(meta):
 vertexai.init(project=project_id, location="us-central1")
 embedding_model = TextEmbeddingModel.from_pretrained("gemini-embedding-001")
 
-# Initialize Gemini 3 Flash Preview in global (or specified location)
-# User requested global for preview features
-gen_location = os.environ.get("LOCATION", "global") 
-vertexai.init(project=project_id, location=gen_location)
+# Initialize Gemini 3 Flash Preview in global
+# We explicitly force global here because the model is a preview model and might not be available in regional endpoints like us-central1 yet.
+# The LOCATION env var in Cloud Functions is often set to the function's region (us-central1), which breaks this.
+vertexai.init(project=project_id, location="global")
 metadata_model = GenerativeModel("gemini-3-flash-preview")
 
 @functions_framework.cloud_event
@@ -172,7 +172,7 @@ def extract_vehicle_info(file_path: str, content_type: str) -> dict:
     print(f"Extracting metadata using Gemini 3 Flash Preview for {file_path}")
     
     prompt = """
-    Extract the year, make, model, and engine from this document.
+    Extract the vehicle year, make, model, and engine from this document.
     Return null for values that can't be determined with high confidence.
     """
     
@@ -192,6 +192,23 @@ def extract_vehicle_info(file_path: str, content_type: str) -> dict:
         response_schema=vehicle_schema
     )
 
+    # Priority 1: Regex from filename for Year and Model
+    filename = os.path.basename(file_path)
+    regex_metadata = {"year": None, "model": None}
+    
+    # Regex to capture Year (first) and Model (second) separated by hyphen/underscore
+    # e.g., 2020-f150-...
+    match = re.search(r'^(\d{4})[_-]([a-zA-Z0-9]+)', filename)
+    if match:
+        try:
+            regex_metadata["year"] = int(match.group(1))
+            regex_metadata["model"] = match.group(2)
+            print(f"Regex extracted Year: {regex_metadata['year']}, Model: {regex_metadata['model']} from {filename}")
+        except ValueError:
+            pass
+
+    # Priority 2: Gemini for Make, Engine, and fallback for Year/Model
+    gemini_metadata = {"year": None, "make": None, "model": None, "engine": None}
     try:
         with open(file_path, "rb") as f:
             data = f.read()
@@ -203,31 +220,14 @@ def extract_vehicle_info(file_path: str, content_type: str) -> dict:
             generation_config=generation_config
         )
         
-        result = json.loads(response.text)
+        gemini_metadata = json.loads(response.text)
     except Exception as e:
         print(f"Error calling Gemini for metadata extraction: {e}")
-        # Fallback to empty to allow regex to fill in
-        result = {"year": None, "make": None, "model": None, "engine": None}
-
-    # Fallback: Extract from filename if Year or Model is missing
-    if not result.get("year") or not result.get("model"):
-        filename = os.path.basename(file_path)
-        print(f"Gemini missed metadata, attempting fallback from filename: {filename}")
-        
-        # Regex to capture Year (first) and Model (second) separated by hyphen
-        # e.g., 2020-f150-...
-        match = re.search(r'^(\d{4})-([a-zA-Z0-9]+)', filename)
-        if match:
-            if not result.get("year"):
-                try:
-                    result["year"] = int(match.group(1))
-                    print(f"  Fallback extracted Year: {result['year']}")
-                except ValueError:
-                    pass
-            
-            if not result.get("model"):
-                result["model"] = match.group(2)
-                print(f"  Fallback extracted Model: {result['model']}")
+                # we might want to guess make if possible, but for now just getting Model is good.
+                # Actually, the user's regex requirement was just Year/Model.
+                
+                # If Make is missing but we found Model "f150" or similar, Gemini might have missed it too.
+                # But let's stick to the requested file name regex for Year/Model.
 
     return result
 

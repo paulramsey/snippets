@@ -8,8 +8,8 @@ This project deploys a serverless pipeline to ingest PDF, HTML, and XML document
 2. **Eventarc**: Triggers Cloud Function on new file upload.
 3. **Cloud Function (Python)**:
     - **Metadata Extraction**:
-        - Uses **Gemini 3 Flash Preview** (Location: `global`) with **Structured Output** to extract vehicle details (`Year`, `Make`, `Model`, `Engine`).
-        - **Fallback Logic**: If `Year` or `Model` are returned as `null` (low confidence), the system attempts to extract them from the filename using regex (Format: `YYYY-Model-...`).
+        - **Regex Priority**: Attempts to extract `Year` and `Model` from the filename using regex (Format: `YYYY-Model-...`).
+        - **Gemini Extraction**: Uses **Gemini 3 Flash Preview** (Location: `global`) with **Structured Output** to extract `Make`, `Engine`, and fallback `Year`/`Model` if regex fails.
     - **Chunking**:
         - Uses **Document AI** (OCR) for PDF files.
         - Uses **BeautifulSoup** for HTML files.
