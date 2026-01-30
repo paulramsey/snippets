@@ -19,7 +19,7 @@
         </header>
 
         <div class="search-box">
-            <input type="text" id="query-input" placeholder="Ask a question (e.g., 'How to change oil?')..." autofocus>
+            <input type="text" id="query-input" placeholder="Ask a question (e.g., 'Recall Notice 24C39')..." autofocus>
             <button id="search-btn">Search</button>
         </div>
 
@@ -42,32 +42,72 @@
             </div>
         </div>
 
-        <div id="loading" class="hidden">
-            <div class="spinner"></div>
-            <p>Searching knowledge base...</p>
-        </div>
+        <div class="main-content">
+            <!-- Left Panel: Search Results -->
+            <div class="results-section">
+                <div id="results-container" class="hidden">
+                    <table id="results-table">
+                        <thead>
+                            <tr>
+                                <th style="width: 15%;">Vehicle</th>
+                                <th style="width: 45%;">Snippet</th>
+                                <th style="width: 20%;">Metadata</th>
+                                <th style="width: 10%;">Score</th>
+                                <th style="width: 10%;">Link</th>
+                            </tr>
+                        </thead>
+                        <tbody id="results-body">
+                            <!-- Rows injected here -->
+                        </tbody>
+                    </table>
+                </div>
 
-        <div id="results-container" class="hidden">
-            <table id="results-table">
-                <thead>
-                    <tr>
-                        <th style="width: 15%;">Vehicle</th>
-                        <th style="width: 45%;">Snippet</th>
-                        <th style="width: 20%;">Metadata</th>
-                        <th style="width: 10%;">Score</th>
-                        <th style="width: 10%;">Link</th>
-                    </tr>
-                </thead>
-                <tbody id="results-body">
-                    <!-- Rows injected here -->
-                </tbody>
-            </table>
-        </div>
+                <div id="loading" class="hidden">
+                    <div class="spinner"></div>
+                    <p>Searching knowledge base...</p>
+                </div>
 
-        <div id="no-results" class="hidden">
-            <p>No results found. Try a different query.</p>
+                <div id="no-results" class="hidden">
+                    <p>No results found. Try a different query.</p>
+                </div>
+                </div>
+        </div> <!-- End of main-content -->
+        
+        <!-- Chat Widget -->
+        <!-- Chat Widget Button -->
+        <button id="chat-toggle" class="chat-toggle-btn">
+            <svg viewBox="0 0 24 24" fill="none" class="gemini-icon">
+                <path d="M12 2C13.5 6 16 9.5 22 12C16 14.5 13.5 18 12 22C10.5 18 8 14.5 2 12C8 9.5 10.5 6 12 2Z"
+                    fill="currentColor" />
+            </svg>
+            <span class="chat-cta">Ask Gemini</span>
+        </button>
+        
+        <div class="chat-section" id="chat-widget">
+            <div class="chat-header">
+                <h3>AI Assistant</h3>
+                <p>Ask me anything about these documents</p>
+                <!-- Optional Close Button -->
+            </div>
+            <div class="chat-messages" id="chat-messages">
+                <div class="message bot-message">
+                    Hello! I can help you find information in the vehicle manuals. What are you looking for?
+                </div>
+            </div>
+            <div class="chat-input-area">
+                <input type="text" id="chat-input" placeholder="Type your question...">
+                <button id="send-btn">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                        stroke-linejoin="round">
+                        <line x1="5" y1="12" x2="19" y2="12"></line>
+                        <polyline points="12 5 19 12 12 19"></polyline>
+                    </svg>
+                </button>
+            </div>
         </div>
-    </div>
+        
+        
+        </div>
 
     <script>
         const searchBtn = document.getElementById('search-btn');
@@ -226,6 +266,102 @@
                 if (e.key === 'Enter') performSearch();
             });
         });
+
+    /* --- Chat Logic --- */
+    const chatInput = document.getElementById('chat-input');
+    const sendBtn = document.getElementById('send-btn');
+    const chatMessages = document.getElementById('chat-messages');
+    const chatWidget = document.getElementById('chat-widget');
+    const chatToggleBtn = document.getElementById('chat-toggle');
+
+    // Toggle Chat
+    chatToggleBtn.addEventListener('click', () => {
+        chatWidget.classList.toggle('open');
+        // Auto focus input when opening
+        if (chatWidget.classList.contains('open')) {
+            setTimeout(() => chatInput.focus(), 100);
+        }
+    });
+
+    async function sendMessage() {
+        const message = chatInput.value.trim();
+        if (!message) return;
+
+        // Add User Message
+        addMessage(message, 'user-message');
+        chatInput.value = '';
+        chatInput.disabled = true;
+        sendBtn.disabled = true;
+
+        // Show Typing Indicator
+        const typingId = showTyping();
+
+        try {
+            const response = await fetch('/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message: message })
+            });
+            const data = await response.json();
+
+            // Remove Typing Indicator
+            removeMessage(typingId);
+
+            if (data.error) {
+                addMessage(`Error: ${data.error}`, 'bot-message');
+            } else {
+                // Update Bot Message with answer
+                addMessage(data.answer, 'bot-message');
+            }
+        } catch (err) {
+            console.error(err);
+            removeMessage(typingId);
+            addMessage("Sorry, something went wrong.", 'bot-message');
+        } finally {
+            chatInput.disabled = false;
+            sendBtn.disabled = false;
+            chatInput.focus();
+        }
+    }
+
+    function showTyping() {
+        const id = 'typing-' + Date.now();
+        const div = document.createElement('div');
+        div.id = id;
+        div.className = 'message bot-message typing-indicator';
+        div.innerHTML = `
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+            <div class="typing-dot"></div>
+        `;
+        chatMessages.appendChild(div);
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+        return id;
+    }
+
+    function removeMessage(id) {
+        const el = document.getElementById(id);
+        if (el) el.remove();
+    }
+
+    function addMessage(text, className) {
+        const div = document.createElement('div');
+        div.className = `message ${className}`;
+
+        // Allow basic Markdown links [Title](URL) -> <a href="URL" target="_blank" class="chat-citation">$1</a>
+        const html = text.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" class="chat-citation">$1</a>');
+        div.innerHTML = html;
+
+        chatMessages.appendChild(div);
+        // Scroll to bottom
+        chatMessages.scrollTop = chatMessages.scrollHeight;
+        return div;
+    }
+
+    sendBtn.addEventListener('click', sendMessage);
+    chatInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') sendMessage();
+    });
     </script>
 </body>
 
