@@ -19,7 +19,7 @@ This project deploys a serverless pipeline to ingest PDF, HTML, and XML document
     - **Spanner Storage**:
         - Writes the chunks, their embeddings, and the refined metadata (Gemini + Fallback) to Spanner.
         - **Vector Search**:
-            - The `Documents` table includes an **Embedding** column defined as `ARRAY<FLOAT64>`.
+            - The `Documents` table includes an **Embedding** column defined as `ARRAY<FLOAT64>(vector_length=>3072)`.
             - This stores the vector representation of the chunk text, enabling semantic similarity search using `COSINE_DISTANCE`.
         - **Full-Text Search**:
             - The `Documents` table includes a **ChunkTokens** column defined as `TOKENLIST AS (TOKENIZE_FULLTEXT(TextContent)) HIDDEN`.
@@ -52,7 +52,17 @@ Type `yes` when prompted.
 
 **Note**: The first deployment might take a few minutes as it enables APIs and creates the Spanner instance.
 
-### 3. Usage
+### 3. Optimization (Optional)
+
+To enable fast approximate nearest neighbor search (ANN), create a vector index:
+
+```bash
+gcloud spanner databases ddl update embeddings-db \
+  --instance=vector-db \
+  --ddl='CREATE VECTOR INDEX EmbeddingIndex ON Documents(Embedding) WHERE Embedding IS NOT NULL OPTIONS(distance_type="COSINE", tree_depth=2)'
+```
+
+### 4. Usage
 
 #### Upload Documents
 Drop a PDF, HTML, or XML file into the created bucket (output as `input_bucket_name` from Terraform):
@@ -73,10 +83,32 @@ gsutil cp my-doc.pdf gs://YOUR_INPUT_BUCKET_NAME/
   FROM Documents, vector
   ORDER BY COSINE_DISTANCE(embedding, vector.values)
   LIMIT 200;  
+  LIMIT 200;  
    ```
 
-2. **Full-Text Search** (Keyword Matching):
+2. **Approximate Vector Search** (ANN - Requires Vector Index):
+   *Use this for large datasets where exact search is too slow.*
    ```sql
+  WITH vector AS (
+    ```
+
+2.  **Approximate Vector Search** (ANN - Requires Vector Index):
+    *Use this for large datasets where exact search is too slow.*
+    ```sql
+  WITH vector AS (
+    SELECT embeddings.values FROM ML.PREDICT(
+      MODEL EmbeddingsModel, (
+        SELECT "<NATURAL LANGUAGE QUERY>" AS content)
+  ))
+  SELECT * EXCEPT(Embedding, values)
+  FROM Documents, vector
+  WHERE Embedding IS NOT NULL
+  ORDER BY APPROX_COSINE_DISTANCE(embedding, vector.values, options => '{"num_leaves_to_search": 10}')
+  LIMIT 200;
+    ```
+
+3.  **Full-Text Search** (Keyword Matching):
+    ```sql
    SELECT * EXCEPT(Embedding)
    FROM Documents
    WHERE SEARCH(ChunkTokens, '<NATURAL LANGUAGE QUERY>')
@@ -99,6 +131,7 @@ gsutil cp my-doc.pdf gs://YOUR_INPUT_BUCKET_NAME/
         id, TextContent, SourceUri, ChunkIndex, 
         Year, Make, Model, Engine, Metadata
       FROM Documents, vector
+      WHERE Embedding IS NOT NULL
       ORDER BY COSINE_DISTANCE(vector.values, embedding)
       LIMIT 200)) AS x WITH OFFSET AS rank
   ),
@@ -133,8 +166,11 @@ gsutil cp my-doc.pdf gs://YOUR_INPUT_BUCKET_NAME/
   GROUP BY id
   ORDER BY rrf_score DESC
   LIMIT 50;
-   ```
-   *(Note: RRF constant `60` is standard, adjustable based on preference).*
+    ```
+    *(Note: RRF constant `60` is standard, adjustable based on preference).*
+
+5.  **Hybrid Search with ANN**:
+    *Replace `COSINE_DISTANCE` with `APPROX_COSINE_DISTANCE(..., options => '{"num_leaves_to_search": 10}')` in the `knn` CTE definition above, AND add `WHERE Embedding IS NOT NULL` to the CTE's SELECT statement.*
 
 ## Cleanup
 To destroy all resources:

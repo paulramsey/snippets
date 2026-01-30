@@ -24,7 +24,7 @@ resource "google_spanner_database" "embeddings_db" {
       Engine STRING(MAX),
       Metadata JSON,
       ChunkTokens TOKENLIST AS (TOKENIZE_FULLTEXT(TextContent)) HIDDEN,
-      Embedding ARRAY<FLOAT64>
+      Embedding ARRAY<FLOAT64>(vector_length=>3072)
     ) PRIMARY KEY (Id)
     EOF
 
