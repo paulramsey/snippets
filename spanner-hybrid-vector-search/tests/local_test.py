@@ -98,6 +98,9 @@ def main():
 
         main.database = MockDatabase()
         main.instance = "MockInstance"
+    
+    print("\nINFO: Using REAL Gemini Metadata Model for local test (gemini-3-flash-preview).")
+    # main.metadata_model is already initialized in main.py
 
     docs_dir = os.path.join(os.path.dirname(__file__), '../test-docs')
     files = glob.glob(os.path.join(docs_dir, '*'))
@@ -119,17 +122,7 @@ def main():
         except Exception as e:
             print(f"FAILED: {e}")
 
-    # Unit test for vehicle info extraction
-    from main import extract_vehicle_info
-    print("\n--- Testing extract_vehicle_info ---")
-    test_filenames = [
-        "2020-f150-manual.pdf",
-        "2021-RAM1500-guide.pdf",
-        "unknown_file.pdf"
-    ]
-    for name in test_filenames:
-        info = extract_vehicle_info(name)
-        print(f"{name} -> {info}")
+
 
 if __name__ == "__main__":
     main()

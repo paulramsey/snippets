@@ -7,12 +7,13 @@ from google.cloud import spanner
 from google.cloud import storage
 import vertexai
 from vertexai.language_models import TextEmbeddingModel
+from vertexai.generative_models import GenerativeModel, Part, GenerationConfig
 from chunker import get_chunker
 from google.cloud.spanner_v1 import JsonObject
 
 # Initialize clients globally
 project_id = os.environ.get("PROJECT_ID")
-location = os.environ.get("LOCATION", "us-central1")
+location = os.environ.get("LOCATION", "global")
 docai_location = os.environ.get("DOCAI_LOCATION", "us")
 spanner_instance_id = os.environ.get("SPANNER_INSTANCE")
 spanner_database_id = os.environ.get("SPANNER_DATABASE")
@@ -36,8 +37,15 @@ def clean_metadata(meta):
     else:
         return meta
 
-vertexai.init(project=project_id, location=location)
+# Initialize Embedding Model in us-central1 (required for this model)
+vertexai.init(project=project_id, location="us-central1")
 embedding_model = TextEmbeddingModel.from_pretrained("gemini-embedding-001")
+
+# Initialize Gemini 3 Flash Preview in global (or specified location)
+# User requested global for preview features
+gen_location = os.environ.get("LOCATION", "global") 
+vertexai.init(project=project_id, location=gen_location)
+metadata_model = GenerativeModel("gemini-3-flash-preview")
 
 @functions_framework.cloud_event
 def process_document_event(cloud_event):
@@ -80,6 +88,10 @@ def process_file(file_path: str, content_type: str, source_uri: str):
     instance = spanner_client.instance(spanner_instance_id)
     database = instance.database(spanner_database_id)
     
+    # Extract vehicle info once per file
+    vehicle_info = extract_vehicle_info(file_path, content_type)
+    print(f"Extracted vehicle info: {vehicle_info}")
+
     # Determine processor ID
     processor_id = None
     if content_type == "application/pdf":
@@ -99,9 +111,9 @@ def process_file(file_path: str, content_type: str, source_uri: str):
         print("No chunks generated.")
         return
 
-    write_embeddings_and_metadata(chunks, source_uri, file_path)
+    write_embeddings_and_metadata(chunks, source_uri, file_path, vehicle_info)
 
-def write_embeddings_and_metadata(chunks, source_uri, file_path):
+def write_embeddings_and_metadata(chunks, source_uri, file_path, vehicle_info):
     # Prepare for Spanner write
     spanner_rows = []
     
@@ -125,9 +137,6 @@ def write_embeddings_and_metadata(chunks, source_uri, file_path):
             embedding_vector = embeddings[j].values
             row_id = str(uuid.uuid4())
             
-            # Extract vehicle info
-            vehicle_info = extract_vehicle_info(os.path.basename(file_path))
-            
             # Clean metadata to remove NaNs/Infs which cause 400 errors
             cleaned_meta = clean_metadata(metadata)
 
@@ -139,10 +148,10 @@ def write_embeddings_and_metadata(chunks, source_uri, file_path):
                     text,
                     JsonObject(cleaned_meta),
                     embedding_vector,
-                    vehicle_info.get("Year"),
-                    vehicle_info.get("Make"),
-                    vehicle_info.get("Model"),
-                    vehicle_info.get("Engine")
+                    vehicle_info.get("year"),
+                    vehicle_info.get("make"),
+                    vehicle_info.get("model"),
+                    vehicle_info.get("engine")
                 )
             )
 
@@ -155,27 +164,70 @@ def write_embeddings_and_metadata(chunks, source_uri, file_path):
             )
         print(f"Successfully wrote {len(spanner_rows)} rows to Spanner.")
 
-def extract_vehicle_info(filename: str) -> dict:
+def extract_vehicle_info(file_path: str, content_type: str) -> dict:
     """
-    Extracts Year, Make, Model, Engine from filename using regex conventions.
-    Expected format patterns:
-    YYYY-Model-... (e.g. 2020-f150...)
+    Extracts Year, Make, Model, Engine from the document using Gemini 3 Flash Preview.
+    Returns null for values that can't be determined with high confidence.
     """
-    info = {
-        "Year": None,
-        "Make": None,
-        "Model": None,
-        "Engine": None
+    print(f"Extracting metadata using Gemini 3 Flash Preview for {file_path}")
+    
+    prompt = """
+    Extract the year, make, model, and engine from this document.
+    Return null for values that can't be determined with high confidence.
+    """
+    
+    vehicle_schema = {
+        "type": "OBJECT",
+        "properties": {
+            "year": {"type": "INTEGER", "nullable": True},
+            "make": {"type": "STRING", "nullable": True},
+            "model": {"type": "STRING", "nullable": True},
+            "engine": {"type": "STRING", "nullable": True}
+        },
+        "required": ["year", "make", "model", "engine"]
     }
     
-    # Simple regex for typical pattern: 2020-f150
-    # You can expand this logic as needed based on file naming conventions
-    match = re.search(r'(\d{4})[_-]([a-zA-Z0-9]+)', filename)
-    if match:
-        info["Year"] = match.group(1)
-        info["Model"] = match.group(2)
-        # Inferred Make if Model is known (demo logic)
-        if info["Model"].lower() == "f150":
-            info["Make"] = "Ford"
+    generation_config = GenerationConfig(
+        response_mime_type="application/json",
+        response_schema=vehicle_schema
+    )
+
+    try:
+        with open(file_path, "rb") as f:
+            data = f.read()
             
-    return info
+        parts = [Part.from_data(data=data, mime_type=content_type), prompt]
+        
+        response = metadata_model.generate_content(
+            parts,
+            generation_config=generation_config
+        )
+        
+        result = json.loads(response.text)
+    except Exception as e:
+        print(f"Error calling Gemini for metadata extraction: {e}")
+        # Fallback to empty to allow regex to fill in
+        result = {"year": None, "make": None, "model": None, "engine": None}
+
+    # Fallback: Extract from filename if Year or Model is missing
+    if not result.get("year") or not result.get("model"):
+        filename = os.path.basename(file_path)
+        print(f"Gemini missed metadata, attempting fallback from filename: {filename}")
+        
+        # Regex to capture Year (first) and Model (second) separated by hyphen
+        # e.g., 2020-f150-...
+        match = re.search(r'^(\d{4})-([a-zA-Z0-9]+)', filename)
+        if match:
+            if not result.get("year"):
+                try:
+                    result["year"] = int(match.group(1))
+                    print(f"  Fallback extracted Year: {result['year']}")
+                except ValueError:
+                    pass
+            
+            if not result.get("model"):
+                result["model"] = match.group(2)
+                print(f"  Fallback extracted Model: {result['model']}")
+
+    return result
+

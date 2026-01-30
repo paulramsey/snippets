@@ -6,12 +6,25 @@ This project deploys a serverless pipeline to ingest PDF, HTML, and XML document
 
 1. **GCS Bucket**: Input drop zone for documents.
 2. **Eventarc**: Triggers Cloud Function on new file upload.
-3. **Cloud Function (Python)**: 
-    - Downloads file.
-    - Uses **Document AI** (for PDF/HTML) or standard parser (for XML) to chunk text.
-    - Generates embeddings using **Vertex AI** (`gemini-embedding-001` or compatible).
-    - Writes chunks + embeddings + metadata to **Spanner**.
-4. **Spanner**: Stores the vectors and metadata.
+3. **Cloud Function (Python)**:
+    - **Metadata Extraction**:
+        - Uses **Gemini 3 Flash Preview** (Location: `global`) with **Structured Output** to extract vehicle details (`Year`, `Make`, `Model`, `Engine`).
+        - **Fallback Logic**: If `Year` or `Model` are returned as `null` (low confidence), the system attempts to extract them from the filename using regex (Format: `YYYY-Model-...`).
+    - **Chunking**:
+        - Uses **Document AI** (OCR) for PDF files.
+        - Uses **BeautifulSoup** for HTML files.
+        - Uses standard iter parsing for XML files.
+    - **Embedding Generation**:
+        - Uses **Vertex AI gemini-embedding-001** (Location: `us-central1`) to generate vector embeddings for each chunk.
+    - **Spanner Storage**:
+        - Writes the chunks, their embeddings, and the refined metadata (Gemini + Fallback) to Spanner.
+        - **Vector Search**:
+            - The `Documents` table includes an **Embedding** column defined as `ARRAY<FLOAT64>`.
+            - This stores the vector representation of the chunk text, enabling semantic similarity search using `COSINE_DISTANCE`.
+        - **Full-Text Search**:
+            - The `Documents` table includes a **ChunkTokens** column defined as `TOKENLIST AS (TOKENIZE_FULLTEXT(TextContent)) HIDDEN`.
+            - This automatically tokenizes the text content for keyword search, enabling the hybrid search capabilities (combining Vector + FTS).
+4. **Spanner**: Stores the vectors and metadata for hybrid search.
 
 ## Prerequisites
 
