@@ -74,98 +74,91 @@ gsutil cp my-doc.pdf gs://YOUR_INPUT_BUCKET_NAME/
 
 1. **Vector Search** (Semantic Similarity):
    ```sql
-  WITH vector AS (
-    SELECT embeddings.values FROM ML.PREDICT(
-      MODEL EmbeddingsModel, (
-        SELECT "<NATURAL LANGUAGE QUERY>" AS content)
-  ))
-  SELECT * EXCEPT(Embedding, values)
-  FROM Documents, vector
-  ORDER BY COSINE_DISTANCE(embedding, vector.values)
-  LIMIT 200;  
-  LIMIT 200;  
+    WITH vector AS (
+      SELECT embeddings.values FROM ML.PREDICT(
+        MODEL EmbeddingsModel, (
+          SELECT "<NATURAL LANGUAGE QUERY>" AS content)
+    ))
+    SELECT * EXCEPT(Embedding, values)
+    FROM Documents, vector
+    ORDER BY COSINE_DISTANCE(embedding, vector.values)
+    LIMIT 200;  
    ```
-
-2. **Approximate Vector Search** (ANN - Requires Vector Index):
-   *Use this for large datasets where exact search is too slow.*
-   ```sql
-  WITH vector AS (
-    ```
 
 2.  **Approximate Vector Search** (ANN - Requires Vector Index):
     *Use this for large datasets where exact search is too slow.*
     ```sql
-  WITH vector AS (
-    SELECT embeddings.values FROM ML.PREDICT(
-      MODEL EmbeddingsModel, (
-        SELECT "<NATURAL LANGUAGE QUERY>" AS content)
-  ))
-  SELECT * EXCEPT(Embedding, values)
-  FROM Documents, vector
-  WHERE Embedding IS NOT NULL
-  ORDER BY APPROX_COSINE_DISTANCE(embedding, vector.values, options => '{"num_leaves_to_search": 10}')
-  LIMIT 200;
+    WITH vector AS (
+      SELECT embeddings.values FROM ML.PREDICT(
+        MODEL EmbeddingsModel, (
+          SELECT "<NATURAL LANGUAGE QUERY>" AS content)
+    ))
+    SELECT * EXCEPT(Embedding, values)
+    FROM Documents, vector
+    WHERE Embedding IS NOT NULL
+    ORDER BY APPROX_COSINE_DISTANCE(embedding, vector.values, options => '{"num_leaves_to_search": 10}')
+    LIMIT 200;
     ```
 
 3.  **Full-Text Search** (Keyword Matching):
     ```sql
-   SELECT * EXCEPT(Embedding)
-   FROM Documents
-   WHERE SEARCH(ChunkTokens, '<NATURAL LANGUAGE QUERY>')
-   ORDER BY SCORE(ChunkTokens, '<NATURAL LANGUAGE QUERY>') DESC
-   LIMIT 200;
-   ```
+    SELECT * EXCEPT(Embedding)
+    FROM Documents
+    WHERE SEARCH(ChunkTokens, '<NATURAL LANGUAGE QUERY>')
+    ORDER BY SCORE(ChunkTokens, '<NATURAL LANGUAGE QUERY>') DESC
+    LIMIT 200;
+    ```
 
-3. **Hybrid Search** (Vector + Full-Text using Reciprocal Rank Fusion):
+4. **Hybrid Search** (Vector + Full-Text using Reciprocal Rank Fusion):
    ```sql
-   @{optimizer_version=7}
-  WITH vector AS (
-    SELECT embeddings.values FROM ML.PREDICT(
-      MODEL EmbeddingsModel, (
-        SELECT "<NATURAL LANGUAGE QUERY>" AS content)
-  )),
-  knn AS (
-    SELECT rank, x.*
-    FROM UNNEST(ARRAY(
-      SELECT AS STRUCT 
-        id, TextContent, SourceUri, ChunkIndex, 
-        Year, Make, Model, Engine, Metadata
-      FROM Documents, vector
-      WHERE Embedding IS NOT NULL
-      ORDER BY COSINE_DISTANCE(vector.values, embedding)
-      LIMIT 200)) AS x WITH OFFSET AS rank
-  ),
-  fts AS (
-    SELECT rank, x.*
-    FROM UNNEST(ARRAY(
-      SELECT AS STRUCT 
-        id, TextContent, SourceUri, ChunkIndex, 
-        Year, Make, Model, Engine, Metadata
-      FROM Documents
-      WHERE SEARCH(ChunkTokens, '<NATURAL LANGUAGE QUERY>')
-      ORDER BY SCORE(ChunkTokens, '<NATURAL LANGUAGE QUERY>') DESC
-      LIMIT 200)) AS x WITH OFFSET AS rank
-  )
-  -- RRF logic to merge Vector and Full-Text results
-  SELECT 
-    SUM(1 / (60 + rank)) AS rrf_score,
-    id,
-    ANY_VALUE(TextContent) AS TextContent,
-    ANY_VALUE(SourceUri) AS SourceUri,
-    ANY_VALUE(ChunkIndex) AS ChunkIndex,
-    ANY_VALUE(Year) AS Year,
-    ANY_VALUE(Make) AS Make,
-    ANY_VALUE(Model) AS Model,
-    ANY_VALUE(Engine) AS Engine,
-    ANY_VALUE(Metadata) AS Metadata
-  FROM (
-    SELECT * FROM knn
-    UNION ALL
-    SELECT * FROM fts
-  )
-  GROUP BY id
-  ORDER BY rrf_score DESC
-  LIMIT 50;
+    @{optimizer_version=7}
+    WITH vector AS (
+      SELECT embeddings.values FROM ML.PREDICT(
+        MODEL EmbeddingsModel, (
+          SELECT "<NATURAL LANGUAGE QUERY>" AS content)
+    )),
+    knn AS (
+      SELECT rank, x.*
+      FROM UNNEST(ARRAY(
+        SELECT AS STRUCT 
+          id, TextContent, SourceUri, ChunkIndex, 
+          Year, Make, Model, Engine, Metadata
+        FROM Documents, vector
+        WHERE Embedding IS NOT NULL
+        ORDER BY COSINE_DISTANCE(vector.values, embedding)
+        LIMIT 200)) AS x WITH OFFSET AS rank
+    ),
+    fts AS (
+      SELECT rank, x.*
+      FROM UNNEST(ARRAY(
+        SELECT AS STRUCT 
+          id, TextContent, SourceUri, ChunkIndex, 
+          Year, Make, Model, Engine, Metadata
+        FROM Documents
+        WHERE SEARCH(ChunkTokens, '<NATURAL LANGUAGE QUERY>')
+        ORDER BY SCORE(ChunkTokens, '<NATURAL LANGUAGE QUERY>') DESC
+        LIMIT 200)) AS x WITH OFFSET AS rank
+    )
+    -- RRF logic to merge Vector and Full-Text results
+    SELECT 
+      SUM(1 / (60 + rank)) AS rrf_score,
+      id,
+      ANY_VALUE(TextContent) AS TextContent,
+      ANY_VALUE(SourceUri) AS SourceUri,
+      ANY_VALUE(ChunkIndex) AS ChunkIndex,
+      ANY_VALUE(Year) AS Year,
+      ANY_VALUE(Make) AS Make,
+      ANY_VALUE(Model) AS Model,
+      ANY_VALUE(Engine) AS Engine,
+      ANY_VALUE(Metadata) AS Metadata
+    FROM (
+      SELECT * FROM knn
+      UNION ALL
+      SELECT * FROM fts
+    )
+    GROUP BY id
+    ORDER BY rrf_score DESC
+    LIMIT 50;
     ```
     *(Note: RRF constant `60` is standard, adjustable based on preference).*
 
