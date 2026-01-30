@@ -51,43 +51,64 @@ gsutil cp my-doc.pdf gs://YOUR_INPUT_BUCKET_NAME/
 
 1. **Vector Search** (Semantic Similarity):
    ```sql
-   SELECT Id, TextContent, COSINE_DISTANCE(Embedding, @query_vector) as Distance
-   FROM Documents
-   ORDER BY Distance ASC
-   LIMIT 10
+   WITH vector AS (
+    SELECT embeddings.values FROM ML.PREDICT(
+      MODEL EmbeddingsModel, (
+        SELECT "<NATURAL LANGUAGE QUERY>" AS content)
+   ))
+   SELECT description
+   FROM products, vector
+   ORDER BY COSINE_DISTANCE(embedding, vector.values)
+   LIMIT 200;
    ```
 
 2. **Full-Text Search** (Keyword Matching):
    ```sql
-   SELECT Id, TextContent, SCORE(Documents, 'score') as Score
-   FROM Documents
-   WHERE SEARCH(ChunkTokens, @query_text)
-   ORDER BY Score DESC
-   LIMIT 10
+   SELECT description
+   FROM products
+   WHERE SEARCH(description_tokens, '<NATURAL LANGUAGE QUERY>')
+   ORDER BY SCORE(description_tokens, '<NATURAL LANGUAGE QUERY>') DESC
+   LIMIT 200;
    ```
 
 3. **Hybrid Search** (Vector + Full-Text using Reciprocal Rank Fusion):
    ```sql
-   WITH
-     vector_search AS (
-       SELECT Id, RANK() OVER (ORDER BY COSINE_DISTANCE(Embedding, @query_vector) ASC) as rank_v
-       FROM Documents
-       ORDER BY rank_v ASC
-       LIMIT 100
-     ),
-     text_search AS (
-       SELECT Id, RANK() OVER (ORDER BY SCORE(Documents, 'score') DESC) as rank_t
-       FROM Documents
-       WHERE SEARCH(ChunkTokens, @query_text)
-       LIMIT 100
-     )
-   SELECT 
-     COALESCE(v.Id, t.Id) as Id,
-     (COALESCE(1.0 / (60 + v.rank_v), 0.0) + COALESCE(1.0 / (60 + t.rank_t), 0.0)) as rrf_score
-   FROM vector_search v
-   FULL OUTER JOIN text_search t ON v.Id = t.Id
+   @{optimizer_version=7}
+   WITH vector AS (
+    SELECT embeddings.values FROM ML.PREDICT(
+      MODEL EmbeddingsModel, (
+        SELECT "<NATURAL LANGUAGE QUERY>" AS content)
+   )),
+   knn AS (
+    SELECT rank, x.id, x.description
+    FROM UNNEST(ARRAY(
+      SELECT AS STRUCT id, description
+      FROM products, vector
+      ORDER BY COSINE_DISTANCE(vector.values, embedding)
+      LIMIT 200)) AS x WITH OFFSET AS rank
+   ),
+   fts AS (
+    SELECT rank, x.id, x.description
+    FROM UNNEST(ARRAY(
+      SELECT AS STRUCT id, description
+      FROM products
+      WHERE SEARCH(description_tokens, '<NATURAL LANGUAGE QUERY>')
+      ORDER BY SCORE(description_tokens, '<NATURAL LANGUAGE QUERY>') DESC
+      LIMIT 200)) AS x WITH OFFSET AS rank
+   )
+   -- https://plg.uwaterloo.ca/~gvcormac/cormacksigir09-rrf.pdf
+   SELECT SUM(1 / (60 + rank)) AS rrf_score, ANY_VALUE(description)
+   FROM ((
+    SELECT rank, id, description
+    FROM knn
+   )
+   UNION ALL (
+    SELECT rank, id, description
+    FROM fts
+   ))
+   GROUP BY id
    ORDER BY rrf_score DESC
-   LIMIT 10
+   LIMIT 50;
    ```
    *(Note: RRF constant `60` is standard, adjustable based on preference).*
 
