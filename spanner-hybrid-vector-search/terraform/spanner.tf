@@ -3,6 +3,7 @@ resource "google_spanner_instance" "vector_db" {
   config       = "regional-${var.region}"
   display_name = "Vector DB Instance"
   num_nodes    = 1
+  edition      = "ENTERPRISE"
 
   depends_on = [google_project_service.services]
 }
@@ -35,6 +36,12 @@ resource "google_spanner_database" "embeddings_db" {
     ) REMOTE OPTIONS (
       endpoint = '//aiplatform.googleapis.com/projects/${var.project_id}/locations/us-central1/publishers/google/models/gemini-embedding-001'
     )
+    EOF
+
+    , <<-EOF
+    CREATE SEARCH INDEX chunk_tokens_idx
+    ON Documents(ChunkTokens)
+    OPTIONS (sort_order_sharding = true)
     EOF
   ]
   deletion_protection = false # For easy teardown in demo
