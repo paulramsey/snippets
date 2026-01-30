@@ -69,25 +69,39 @@ def search():
           AND (@engine IS NULL OR Engine = @engine)
         ORDER BY SCORE(ChunkTokens, @query) DESC
         LIMIT 200)) AS x WITH OFFSET AS rank
+    ),
+    merged AS (
+      SELECT 
+        SUM(1 / (60 + rank)) AS rrf_score,
+        id,
+        ANY_VALUE(TextContent) AS TextContent,
+        ANY_VALUE(SourceUri) AS SourceUri,
+        ANY_VALUE(ChunkIndex) AS ChunkIndex,
+        ANY_VALUE(Year) AS Year,
+        ANY_VALUE(Make) AS Make,
+        ANY_VALUE(Model) AS Model,
+        ANY_VALUE(Engine) AS Engine,
+        ANY_VALUE(Metadata) AS Metadata
+      FROM (
+        SELECT * FROM knn
+        UNION ALL
+        SELECT * FROM fts
+      )
+      GROUP BY id
     )
-    -- RRF logic to merge Vector and Full-Text results
-    SELECT 
-      SUM(1 / (60 + rank)) AS rrf_score,
-      id,
+    SELECT
+      MAX(rrf_score) AS rrf_score,
+      ANY_VALUE(id) AS id,
       ANY_VALUE(TextContent) AS TextContent,
-      ANY_VALUE(SourceUri) AS SourceUri,
-      ANY_VALUE(ChunkIndex) AS ChunkIndex,
+      SourceUri,
+      ChunkIndex,
       ANY_VALUE(Year) AS Year,
       ANY_VALUE(Make) AS Make,
       ANY_VALUE(Model) AS Model,
       ANY_VALUE(Engine) AS Engine,
       ANY_VALUE(Metadata) AS Metadata
-    FROM (
-      SELECT * FROM knn
-      UNION ALL
-      SELECT * FROM fts
-    )
-    GROUP BY id
+    FROM merged
+    GROUP BY SourceUri, ChunkIndex
     ORDER BY rrf_score DESC
     LIMIT 50;
     """
