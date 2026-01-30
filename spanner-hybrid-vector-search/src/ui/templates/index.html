@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Spanner Vector Search</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600&display=swap" rel="stylesheet">
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <h1>Vehicle Document Search</h1>
+            <p class="subtitle">Powered by Spanner Hybrid Search (Vector + Full-Text)</p>
+        </header>
+
+        <div class="search-box">
+            <input type="text" id="query-input" placeholder="Ask a question (e.g., 'How to change oil?')..." autofocus>
+            <button id="search-btn">Search</button>
+        </div>
+
+        <div class="filters-container">
+            <div class="filter-group">
+                <label for="filter-year">Year</label>
+                <input type="text" id="filter-year" placeholder="e.g. 2020">
+            </div>
+            <div class="filter-group">
+                <label for="filter-make">Make</label>
+                <input type="text" id="filter-make" placeholder="e.g. Ford">
+            </div>
+            <div class="filter-group">
+                <label for="filter-model">Model</label>
+                <input type="text" id="filter-model" placeholder="e.g. F-150">
+            </div>
+            <div class="filter-group">
+                <label for="filter-engine">Engine</label>
+                <input type="text" id="filter-engine" placeholder="e.g. V8">
+            </div>
+        </div>
+
+        <div id="loading" class="hidden">
+            <div class="spinner"></div>
+            <p>Searching knowledge base...</p>
+        </div>
+
+        <div id="results-container" class="hidden">
+            <table id="results-table">
+                <thead>
+                    <tr>
+                        <th style="width: 15%;">Vehicle</th>
+                        <th style="width: 45%;">Snippet</th>
+                        <th style="width: 20%;">Metadata</th>
+                        <th style="width: 10%;">Score</th>
+                        <th style="width: 10%;">Link</th>
+                    </tr>
+                </thead>
+                <tbody id="results-body">
+                    <!-- Rows injected here -->
+                </tbody>
+            </table>
+        </div>
+
+        <div id="no-results" class="hidden">
+            <p>No results found. Try a different query.</p>
+        </div>
+    </div>
+
+    <script>
+        const searchBtn = document.getElementById('search-btn');
+        const queryInput = document.getElementById('query-input');
+        const filterYear = document.getElementById('filter-year');
+        const filterMake = document.getElementById('filter-make');
+        const filterModel = document.getElementById('filter-model');
+        const filterEngine = document.getElementById('filter-engine');
+
+        const resultsBody = document.getElementById('results-body');
+        const loadingDiv = document.getElementById('loading');
+        const resultsContainer = document.getElementById('results-container');
+        const noResultsDiv = document.getElementById('no-results');
+
+        async function performSearch() {
+            const query = queryInput.value.trim();
+            if (!query) return;
+
+            // Gather filters
+            const params = new URLSearchParams({ q: query });
+            if (filterYear.value.trim()) params.append('year', filterYear.value.trim());
+            if (filterMake.value.trim()) params.append('make', filterMake.value.trim());
+            if (filterModel.value.trim()) params.append('model', filterModel.value.trim());
+            if (filterEngine.value.trim()) params.append('engine', filterEngine.value.trim());
+
+            // Reset UI
+            resultsBody.innerHTML = '';
+            resultsContainer.classList.add('hidden');
+            noResultsDiv.classList.add('hidden');
+            loadingDiv.classList.remove('hidden');
+
+            try {
+                const response = await fetch(`/search?${params.toString()}`);
+                const data = await response.json();
+
+                loadingDiv.classList.add('hidden');
+
+                if (data.error) {
+                    alert(`Error: ${data.error}`);
+                    return;
+                }
+
+                if (data.length === 0) {
+                    noResultsDiv.classList.remove('hidden');
+                    return;
+                }
+
+                data.forEach(item => {
+                    const row = document.createElement('tr');
+
+                    // Format Vehicle string
+                    const year = item.year || '';
+                    const make = item.make || '';
+                    const model = item.model || '';
+                    const vehicleStr = `${year} ${make} ${model}`.trim() || 'Unknown Vehicle';
+
+
+
+
+                    // Format Metadata
+                    let metadataHtml = '<span class="text-muted">None</span>';
+                    if (item.metadata) {
+                        try {
+                            // Pretty print or just showing key-values
+                            // We'll show it as a list of chips or small code block
+                            const meta = item.metadata;
+                            // Filter out known fields if redundant? items like 'year' are already shown.
+                            // But user asked for "Metadata column", likely the JSON content.
+                            metadataHtml = `<pre class="metadata-block">${JSON.stringify(meta, null, 2)}</pre>`;
+                        } catch (e) {
+                            metadataHtml = JSON.stringify(item.metadata);
+                        }
+                    }
+
+                    // Extract Page Number
+                    const pageNum = item.metadata && item.metadata.page_number ? item.metadata.page_number : null;
+                    const pageLabel = pageNum ? `Page ${pageNum}` : '';
+
+                    // Format Source Link (convert gs:// to https://storage.cloud.google.com/)
+                    let sourceUrl = item.source_uri ?
+                        item.source_uri.replace('gs://', 'https://storage.cloud.google.com/') : '#';
+
+                    // Generate Text Fragment and Page Hash
+                    if (sourceUrl !== '#') {
+                        const cleanSnippet = (item.text_content || '').replace(/\s+/g, ' ').trim();
+                        const isPdf = sourceUrl.toLowerCase().endsWith('.pdf');
+                        let hash = '';
+
+                        // Add Page Number (PDF only)
+                        if (isPdf && pageNum) {
+                            hash = `page=${pageNum}`;
+                        }
+
+                        // Add Text Fragment
+                        if (cleanSnippet) {
+                            // Append :~:text=... (Chrome syntax)
+                            // If hash exists (e.g. page=5), append :~:text=...
+                            // If hash empty, start with :~:text=...
+                            const fragment = `text=${encodeURIComponent(cleanSnippet)}`;
+                            hash += hash ? `:~:${fragment}` : `:~:${fragment}`;
+                        }
+
+                        if (hash) {
+                            sourceUrl += `#${hash}`;
+                        }
+                    }
+
+                    row.innerHTML = `
+                        <td class="vehicle-col">
+                            <div class="vehicle-name">${vehicleStr}</div>
+                            <div class="engine-info">${item.engine || ''}</div>
+                        </td>
+                        <td class="snippet-col">
+                            <div class="snippet-wrapper collapsed">
+                                <div class="snippet-content">${item.text_content}</div>
+                                <button class="snippet-toggle" onclick="toggleSnippet(this)" title="Expand/Collapse">
+                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                                </button>
+                            </div>
+                        </td>
+                        <td class="metadata-col">${metadataHtml}</td>
+                        <td class="score-col">
+                            <div class="score-badge">${item.rrf_score.toFixed(4)}</div>
+                        </td>
+                        <td class="link-col">
+                            <a href="${sourceUrl}" target="_blank" class="view-link">View</a>
+                            <div class="chunk-id">
+                                ${pageLabel ? `<span class="page-info">${pageLabel}</span>` : ''}
+                                <span class="chunk-num">#${item.chunk_index}</span>
+                            </div>
+                        </td>
+                    `;
+                    resultsBody.appendChild(row);
+                });
+
+                resultsContainer.classList.remove('hidden');
+
+            } catch (err) {
+                loadingDiv.classList.add('hidden');
+                console.error(err);
+                alert("Search failed. Check console for details.");
+            }
+        }
+
+        function toggleSnippet(btn) {
+            const wrapper = btn.closest('.snippet-wrapper');
+            wrapper.classList.toggle('collapsed');
+            wrapper.classList.toggle('expanded');
+        }
+
+        searchBtn.addEventListener('click', performSearch);
+
+        // Trigger search on Enter for all inputs
+        [queryInput, filterYear, filterMake, filterModel, filterEngine].forEach(input => {
+            input.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') performSearch();
+            });
+        });
+    </script>
+</body>
+
+</html>
