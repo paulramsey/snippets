@@ -166,3 +166,5 @@ cython_debug/
 # Terraform
 .terraform*
 terraform.tfstate*
+
+spanner-hybrid-vector-search/test-docs/
