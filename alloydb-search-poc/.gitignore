@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.pyc
+
+# uv
+.venv/
+.python-version
+
+# System
+.DS_Store
+
+images/
+*.parquet
+*.csv

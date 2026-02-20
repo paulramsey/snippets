@@ -9,6 +9,13 @@ This guide provides an end-to-end, step-by-step walkthrough to set up an AlloyDB
 3.  **APIs**: Enable the required APIs.
 4.  **Database Flags**: Ensure `google_ml_integration.enable_model_support=on`, `google_ml_integration.enable_faster_embedding_generation=on`, and `scann.enable_zero_knob_index_creation=on` are set (done in the creation step below).
 
+## Part 0: Create a New Project (Recommended)
+
+To allow for a smooth setup and avoid IP address or network conflicts, **we strongly recommend creating a fresh Google Cloud Project** for this POC.
+
+1.  **Create Project**: Go to [Manage Resources](https://console.cloud.google.com/cloud-resource-manager) and create a new project (e.g., `alloydb-ai-poc`).
+2.  **Enable Billing**: Ensure billing is enabled for the new project.
+
 ## Part 1: Setup & Configuration (Cloud Shell)
 
 Run the following commands in Cloud Shell to set up your environment and infrastructure.
@@ -31,10 +38,10 @@ gcloud config set project ${PROJECT_ID}
 gcloud auth application-default set-quota-project ${PROJECT_ID}
 
 # 5. Set Common Variables
-export REGION="us-east4"
+export REGION="us-central1"
 export CLUSTER_ID="alloydb-ai-poc-cluster"
 export INSTANCE_ID="alloydb-ai-poc-primary"
-export PASSWORD="SuperSecretPassword123!" # Change this!
+export PASSWORD="SuperSecretPassword@123" # Change this!
 ```
 
 ### 2. Enable Required APIs
@@ -49,6 +56,8 @@ gcloud services enable \
   servicenetworking.googleapis.com \
   serviceusage.googleapis.com \
   developerknowledge.googleapis.com \
+  dns.googleapis.com \
+  discoveryengine.googleapis.com \
   --project=${PROJECT_ID}
 
 # 3. Configure Networking (Private Services Access - Required)
@@ -75,6 +84,55 @@ gcloud services vpc-peerings connect \
   --ranges=google-managed-services-alloydb-vpc \
   --network=alloydb-vpc \
   --project=${PROJECT_ID}
+
+# 4. Configure Private Service Connect (PSC) for Google APIs
+# Instead of routing over the public internet (NAT), we use PSC to access Google APIs (Vertex AI) privately.
+
+# 1. Create an IP address for the PSC Endpoint
+# address 10.100.0.7 is chosen to avoid conflicts with auto-mode subnets (10.128.0.0/9)
+gcloud compute addresses create psc-google-apis-ip \
+  --global \
+  --purpose=PRIVATE_SERVICE_CONNECT \
+  --addresses=10.100.0.7 \
+  --network=alloydb-vpc \
+  --project=${PROJECT_ID}
+
+# 2. Create the Forwarding Rule to Google APIs
+# Note: Name must be 1-20 characters, alphanumeric, with no hyphens.
+gcloud compute forwarding-rules create pscgoogleapis \
+  --global \
+  --target-google-apis-bundle=all-apis \
+  --address=psc-google-apis-ip \
+  --network=alloydb-vpc \
+  --project=${PROJECT_ID}
+
+# 3. Configure DNS to route Google API traffic to the PSC Endpoint
+# This ensures AlloyDB uses the private path to reach Vertex AI.
+
+# Create a private DNS zone for googleapis.com
+gcloud dns managed-zones create googleapis-private-zone \
+  --description="Private DNS context for Google APIs" \
+  --dns-name="googleapis.com." \
+  --visibility="private" \
+  --networks=alloydb-vpc \
+  --project=${PROJECT_ID}
+
+# Add the A-record pointing to the PSC IP
+PSC_IP=$(gcloud compute addresses describe psc-google-apis-ip --global --format="value(address)" --project=${PROJECT_ID})
+
+gcloud dns record-sets create "googleapis.com." \
+  --rrdatas=${PSC_IP} \
+  --type=A \
+  --ttl=300 \
+  --zone=googleapis-private-zone \
+  --project=${PROJECT_ID}
+
+gcloud dns record-sets create "*.googleapis.com." \
+  --rrdatas="googleapis.com." \
+  --type=CNAME \
+  --ttl=300 \
+  --zone=googleapis-private-zone \
+  --project=${PROJECT_ID}
 ```
 
 ### 3. Create AlloyDB Cluster and Instance
@@ -83,7 +141,7 @@ gcloud services vpc-peerings connect \
 # Set environment variables
 export CLUSTER_ID="alloydb-ai-poc-cluster"
 export INSTANCE_ID="alloydb-ai-poc-primary"
-export REGION="us-east4" # Using us-east4 for Vertex AI Model Garden availability
+export REGION="us-central1" # Using us-central1 for Vertex AI Model Garden availability
 export PASSWORD="SuperSecretPassword@123" # Change this!
 
 # Create Cluster (Linked to the Custom VPC)
@@ -108,7 +166,7 @@ gcloud alloydb instances create ${INSTANCE_ID} \
   --machine-type=c4a-highmem-16-lssd \
   --authorized-external-networks=${MY_IP}/32 \
   --ssl-mode=ALLOW_UNENCRYPTED_AND_ENCRYPTED \
-  --database-flags=google_ml_integration.enable_model_support=on,google_ml_integration.enable_faster_embedding_generation=on,scann.enable_zero_knob_index_creation=on,google_columnar_engine.enabled=on,password.enforce_complexity=on \
+  --database-flags=google_ml_integration.enable_model_support=on,google_ml_integration.enable_faster_embedding_generation=on,scann.enable_zero_knob_index_creation=on,google_columnar_engine.enabled=on,password.enforce_complexity=on,google_ml_integration.enable_ai_query_engine=on \
   --project=${PROJECT_ID} \
   --assign-inbound-public-ip=ASSIGN_IPV4
 
@@ -128,6 +186,16 @@ SERVICE_AGENT="service-${PROJECT_NUMBER}@gcp-sa-alloydb.iam.gserviceaccount.com"
 gcloud projects add-iam-policy-binding ${PROJECT_ID} \
   --member="serviceAccount:${SERVICE_AGENT}" \
   --role="roles/aiplatform.user"
+
+# (Optional) Grant Service Usage Consumer if needed for API access
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:${SERVICE_AGENT}" \
+  --role="roles/serviceusage.serviceUsageConsumer"
+
+# Grant Discovery Engine Viewer for Ranking API
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:${SERVICE_AGENT}" \
+  --role="roles/discoveryengine.viewer"
 ```
 
 ## Part 2: Database Setup & Vector Search (SQL)
@@ -152,26 +220,33 @@ PGPASSWORD=${PASSWORD} psql -h ${IP_ADDRESS} -U postgres postgres
 ### 1. Enable Extensions
 Run the following SQL to enable vector support, machine learning integration, and ScaNN indexing.
 
+> NOTE: You might get an error on the ALTER EXTENSION lines. That's fine. Just ignore it and continue.
+
 ```sql
 CREATE EXTENSION IF NOT EXISTS vector;
 ALTER EXTENSION vector UPDATE;
 CREATE EXTENSION IF NOT EXISTS alloydb_scann;
 ALTER EXTENSION alloydb_scann UPDATE;
 CREATE EXTENSION IF NOT EXISTS google_ml_integration;
-ALTER EXTENSION google_ml_integration UPDATE;
 ```
 
 ### 2. Verify Vertex AI Integration
 Check that the ML integration extension allows access to Vertex AI models.
 
 ```sql
+-- Version should be 1.5.6+
 SELECT extversion FROM pg_extension WHERE extname = 'google_ml_integration';
 
 -- Grant permissions for auto-embedding management (if using a non-superuser)
 GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA google_ml TO postgres;
+GRANT USAGE ON SCHEMA ai TO postgres;
+GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA ai TO postgres;
 GRANT INSERT, UPDATE, DELETE ON google_ml.embed_gen_progress TO postgres;
 GRANT INSERT, UPDATE, DELETE ON google_ml.embed_gen_settings TO postgres;
 
+-- TEST: Verify Vertex AI Integration by generating a sample embedding
+-- This confirms the Service Account has the correct 'Vertex AI User' role.
+SELECT embedding('gemini-embedding-001', 'integration test')::vector AS test_embedding;
 ```
 
 ### 3. Load Data
@@ -181,20 +256,39 @@ For this POC, we will use the **Marqo-GS-10M** dataset from Hugging Face. To han
 
 #### A. Download & Prepare Data
 1.  Download a subset (e.g., `corpus_1.csv`) from the dataset.
-2.  **Important**: The dataset is typically provided in **Parquet** format. You **must convert it to CSV** and remove the header row before uploading, as `gcloud import` requires CSV format and strictly matches columns.
-3.  Upload the converted CSV to your GCS bucket (e.g., `gs://your-bucket/marqo_subset.csv`).
 
-> **Note**: This strategy assumes the CSV matches the Marqo dataset schema (headers: `image`, `query`, `product_id`, `position`, `title`, `paix_id`, `score_linear`, `score_reciprocal`, `no_score`, `query_id`).
+2.  **Important**: The dataset is typically provided in **Parquet** format. You **must convert it to CSV** and remove the header row before uploading.
+    
+    We will use `uv` to manage Python dependencies for the conversion script.
+    
+    ```bash
+    ```bash
+    # Run the conversion script
+    # Dependencies (pandas, pyarrow, google-cloud-storage, etc.) are managed by pyproject.toml
+    # This script will automatically:
+    # 1. Download a subset (data/in_domain-0.parquet) if not found
+    # 2. Extract images from the dataset and upload them to your GCS bucket
+    # 3. Generate the CSV with GCS URIs for the images
+    
+    export BUCKET_NAME="alloydb-poc-loading-${PROJECT_ID}"
+    uv run convert_parquet_to_csv.py --bucket ${BUCKET_NAME}
+    ```
 
-#### B. Create Final Table
-Create the optimized `product` table immediately. We use a **surrogate primary key** (`id`) for efficient indexing and storage, while keeping the original ID as `product_id`.
+3.  Upload the converted CSV to your GCS bucket.
+    ```bash
+    gcloud storage cp marqo_subset.csv gs://${BUCKET_NAME}/marqo_subset.csv
+    ```
+
+> **Note**: The Python script converts the dataset to a CSV with the following columns: `product_id`, `name`, `description`, `category`, `image_url`. The `embedding` column will be populated by the database later.
+
+#### B. Create AlloyDB Table
+Create the optimized `product` table. We use `product_id` as the primary key.
 
 ```sql
 DROP TABLE IF EXISTS product CASCADE;
 
 CREATE TABLE product (
-  id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-  product_id VARCHAR(255),
+  product_id VARCHAR(255) PRIMARY KEY,
   name TEXT,
   description TEXT,
   category VARCHAR(255),
@@ -205,8 +299,8 @@ CREATE TABLE product (
 
 #### C. Bulk Import (gcloud)
 Use `gcloud` to import the CSV directly into the `product` table.
-*   **Important**: This assumes your CSV has **5 columns** in this specific order: `product_id`, `title`, `description` (or title again), `category`, `image_url`.
-*   We use the `--columns` flag to map input data to specific table columns, skipping `id` (auto-generated) and `embedding` (generated later).
+*   **Important**: This assumes your CSV has **5 columns** in this specific order: `product_id`, `name`, `description`, `category`, `image_url`.
+*   We use the `--columns` flag to map input data to specific table columns.
 
 **Reference**: [gcloud alloydb clusters import](https://docs.cloud.google.com/sdk/gcloud/reference/alloydb/clusters/import)
 
@@ -226,7 +320,7 @@ gcloud projects add-iam-policy-binding ${PROJECT_ID} \
 ```bash
 gcloud alloydb clusters import ${CLUSTER_ID} \
   --region=${REGION} \
-  --gcs-uri=gs://your-bucket/path/to/marqo_subset.csv \
+  --gcs-uri=gs://${BUCKET_NAME}/marqo_subset.csv \
   --database=postgres \
   --table=product \
   --columns=product_id,name,description,category,image_url \
@@ -242,7 +336,7 @@ Backfill embeddings for the new data.
 
 ```sql
 -- Configure and Trigger Auto-Embeddings
-SELECT ai.initialize_embeddings(
+CALL ai.initialize_embeddings(
   model_id => 'gemini-embedding-001',
   table_name => 'product',
   content_column => 'description', -- Using description (title) for embedding
@@ -287,19 +381,19 @@ Find products similar to "music" (semantic search).
 -- Simple Vector Search
 SELECT product_id, name, description 
 FROM product 
-ORDER BY embedding <=> embedding('gemini-embedding-001', 'music')::vector 
+ORDER BY embedding <=> embedding('gemini-embedding-001', 'soft winter clothes')::vector 
 LIMIT 100;
 ```
 
-Find "Toys" similar to "music" (Filtered Search).
+Find "Earmuffs" similar to "pink fluffy" (Filtered Search).
 *Note: We use the `category` column for filtering instead of a separate inventory table.*
 
 ```sql
 -- Vector Search with Filters
 SELECT product_id, name, description, category
 FROM product
-WHERE category = 'Toys'
-ORDER BY embedding <=> embedding('gemini-embedding-001', 'music')::vector 
+WHERE category = 'Earmuffs'
+ORDER BY embedding <=> embedding('gemini-embedding-001', 'Warm and furry')::vector 
 LIMIT 100;
 ```
 
@@ -329,24 +423,26 @@ Combine vector search and full-text search results using Reciprocal Rank Fusion 
 ```sql
 -- Hybrid Search using Reciprocal Rank Fusion (RRF)
 WITH vector_search AS (
-  SELECT id, product_id,
-         RANK () OVER (ORDER BY embedding <=> embedding('gemini-embedding-001', 'music')::vector) AS rank
+  SELECT product_id, name, image_url,
+         RANK () OVER (ORDER BY embedding <=> embedding('gemini-embedding-001', 'unisex')::vector) AS rank
   FROM product
-  ORDER BY embedding <=> embedding('gemini-embedding-001', 'music')::vector
+  ORDER BY embedding <=> embedding('gemini-embedding-001', 'unisex')::vector
   LIMIT 20
 ),
 text_search AS (
-  SELECT id, product_id,
-         RANK () OVER (ORDER BY ts_rank(fts_document, to_tsquery('english', 'music')) DESC) AS rank
+  SELECT product_id, name, image_url,
+         RANK () OVER (ORDER BY ts_rank(fts_document, to_tsquery('english', 'unisex')) DESC) AS rank
   FROM product
-  WHERE fts_document @@ to_tsquery('english', 'music')
-  ORDER BY ts_rank(fts_document, to_tsquery('english', 'music')) DESC
+  WHERE fts_document @@ to_tsquery('english', 'unisex')
+  ORDER BY ts_rank(fts_document, to_tsquery('english', 'unisex')) DESC
   LIMIT 20
 )
 SELECT COALESCE(v.product_id, t.product_id) AS product_id,
+       COALESCE(v.name, t.name) AS name,
+       COALESCE(v.image_url, t.image_url) AS image_url,
        COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + t.rank), 0.0) AS rrf_score
 FROM vector_search v
-FULL OUTER JOIN text_search t ON v.id = t.id
+FULL OUTER JOIN text_search t ON v.product_id = t.product_id
 ORDER BY rrf_score DESC
 LIMIT 100;
 ```
@@ -359,18 +455,18 @@ Re-rank the top predictions using the Vertex AI Ranking API for higher precision
 ```sql
 -- Reranking Example with Hybrid Candidates
 WITH vector_search AS (
-  SELECT id, product_id, name, description,
-         RANK () OVER (ORDER BY embedding <=> embedding('gemini-embedding-001', 'toys for kids')::vector) AS rank
+  SELECT product_id, name, description,
+         RANK () OVER (ORDER BY embedding <=> embedding('gemini-embedding-001', 'warm fuzzy earmuffs')::vector) AS rank
   FROM product
-  ORDER BY embedding <=> embedding('gemini-embedding-001', 'toys for kids')::vector
+  ORDER BY embedding <=> embedding('gemini-embedding-001', 'warm fuzzy earmuffs')::vector
   LIMIT 100
 ),
 text_search AS (
-  SELECT id, product_id, name, description,
-         RANK () OVER (ORDER BY ts_rank(fts_document, to_tsquery('english', 'toys for kids')) DESC) AS rank
+  SELECT product_id, name, description,
+         RANK () OVER (ORDER BY ts_rank(fts_document, plainto_tsquery('english', 'warm fuzzy earmuffs')) DESC) AS rank
   FROM product
-  WHERE fts_document @@ to_tsquery('english', 'toys for kids')
-  ORDER BY ts_rank(fts_document, to_tsquery('english', 'toys for kids')) DESC
+  WHERE fts_document @@ plainto_tsquery('english', 'warm fuzzy earmuffs')
+  ORDER BY ts_rank(fts_document, plainto_tsquery('english', 'warm fuzzy earmuffs')) DESC
   LIMIT 100
 ),
 hybrid_candidates AS (
@@ -380,7 +476,7 @@ hybrid_candidates AS (
          COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + t.rank), 0.0) AS rrf_score,
          ROW_NUMBER() OVER (ORDER BY (COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + t.rank), 0.0)) DESC) AS rank_id
   FROM vector_search v
-  FULL OUTER JOIN text_search t ON v.id = t.id
+  FULL OUTER JOIN text_search t ON v.product_id = t.product_id
   ORDER BY rrf_score DESC
   LIMIT 100 -- Top 100 candidates for reranking
 ),
@@ -388,8 +484,8 @@ reranked_results AS (
   -- Use Vertex AI Ranking API to re-score the hybrid candidates
   SELECT index, score
   FROM ai.rank(
-    model_id => 'semantic-ranker-default@latest',
-    search_string => 'toys for kids',
+    model_id => 'semantic-ranker-512',
+    search_string => 'warm fuzzy earmuffs',
     documents => (SELECT ARRAY_AGG(description ORDER BY rank_id) FROM hybrid_candidates),
     top_n => 10
   )
@@ -411,7 +507,7 @@ Use `gcloud` to deploy the models using the Hugging Face Text Embeddings Inferen
 
 ```bash
 # 1. Set Common Variables
-export REGION="us-east4"
+export REGION="us-central1"
 export ENDPOINT_ID="bge-m3-endpoint"
 export RERANKER_ENDPOINT_ID="bge-reranker-endpoint"
 # Using g2-standard-8 (1x L4 GPU) for best performance
@@ -491,10 +587,10 @@ $$;
 
 -- 3. Register BGE-M3 Model
 -- Replace ENDPOINT_ID with your actual Vertex AI Endpoint ID (numeric)
--- Get it via: gcloud ai endpoints list --region=us-east4 --filter="display_name=bge-m3-endpoint"
+-- Get it via: gcloud ai endpoints list --region=us-central1 --filter="display_name=bge-m3-endpoint"
 CALL google_ml.create_model(
   model_id => 'bge-m3',
-  model_request_url => 'https://us-east4-aiplatform.googleapis.com/v1/projects/' || current_setting('google_ml_integration.project_id') || '/locations/us-east4/endpoints/YOUR_BGE_M3_ENDPOINT_ID:predict',
+  model_request_url => 'https://us-central1-aiplatform.googleapis.com/v1/projects/' || current_setting('google_ml_integration.project_id') || '/locations/us-central1/endpoints/YOUR_BGE_M3_ENDPOINT_ID:predict',
   model_provider => 'custom',
   model_type => 'text_embedding',
   model_in_transform_fn => 'bge_m3_input_transform',
@@ -535,7 +631,7 @@ $$;
 -- Replace YOUR_RERANKER_ENDPOINT_ID with actual numeric ID
 CALL google_ml.create_model(
   model_id => 'bge-reranker-v2-m3',
-  model_request_url => 'https://us-east4-aiplatform.googleapis.com/v1/projects/' || current_setting('google_ml_integration.project_id') || '/locations/us-east4/endpoints/YOUR_RERANKER_ENDPOINT_ID:predict',
+  model_request_url => 'https://us-central1-aiplatform.googleapis.com/v1/projects/' || current_setting('google_ml_integration.project_id') || '/locations/us-central1/endpoints/YOUR_RERANKER_ENDPOINT_ID:predict',
   model_provider => 'custom',
   model_type => 'reranking',
   model_in_transform_fn => 'bge_reranker_input_transform',
@@ -551,7 +647,7 @@ Add a column for BGE-M3 embeddings and run a comparison query.
 ALTER TABLE product ADD COLUMN embedding_bge vector(1024) DEFAULT NULL;
 
 -- Initialize BGE-M3 embeddings
-SELECT ai.initialize_embeddings(
+CALL ai.initialize_embeddings(
   model_id => 'bge-m3',
   table_name => 'product',
   content_column => 'description',
@@ -561,30 +657,30 @@ SELECT ai.initialize_embeddings(
 
 -- Compare Search Results
 -- 1. Gemini Embedding
-SELECT product_id, name, description, 1 - (embedding <=> embedding('gemini-embedding-001', 'music')::vector) as score
+SELECT product_id, name, description, 1 - (embedding <=> embedding('gemini-embedding-001', 'warm fuzzy earmuffs')::vector) as score
 FROM product
 ORDER BY score DESC LIMIT 100;
 
 -- 2. BGE-M3 Embedding
-SELECT product_id, name, description, 1 - (embedding_bge <=> embedding('bge-m3', 'music')::vector) as score
+SELECT product_id, name, description, 1 - (embedding_bge <=> embedding('bge-m3', 'warm fuzzy earmuffs')::vector) as score
 FROM product
 ORDER BY score DESC LIMIT 100;
 
 ```sql
 -- 3. Reranking Top 10 with BGE-Reranker (Using Hybrid Candidates)
 WITH vector_search AS (
-  SELECT id, product_id, name, description,
-         RANK () OVER (ORDER BY embedding_bge <=> embedding('bge-m3', 'music')::vector) as rank
+  SELECT product_id, name, description,
+         RANK () OVER (ORDER BY embedding_bge <=> embedding('bge-m3', 'warm fuzzy earmuffs')::vector) as rank
   FROM product
-  ORDER BY embedding_bge <=> embedding('bge-m3', 'music')::vector
+  ORDER BY embedding_bge <=> embedding('bge-m3', 'warm fuzzy earmuffs')::vector
   LIMIT 100
 ),
 text_search AS (
-  SELECT id, product_id, name, description,
-         RANK () OVER (ORDER BY ts_rank(fts_document, to_tsquery('english', 'music')) DESC) AS rank
+  SELECT product_id, name, description,
+         RANK () OVER (ORDER BY ts_rank(fts_document, plainto_tsquery('english', 'warm fuzzy earmuffs')) DESC) AS rank
   FROM product
-  WHERE fts_document @@ to_tsquery('english', 'music')
-  ORDER BY ts_rank(fts_document, to_tsquery('english', 'music')) DESC
+  WHERE fts_document @@ plainto_tsquery('english', 'warm fuzzy earmuffs')
+  ORDER BY ts_rank(fts_document, plainto_tsquery('english', 'warm fuzzy earmuffs')) DESC
   LIMIT 100
 ),
 hybrid_candidates AS (
@@ -594,21 +690,19 @@ hybrid_candidates AS (
          COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + t.rank), 0.0) AS rrf_score,
          ROW_NUMBER() OVER (ORDER BY (COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + t.rank), 0.0)) DESC) AS rank_id
   FROM vector_search v
-  FULL OUTER JOIN text_search t ON v.id = t.id
+  FULL OUTER JOIN text_search t ON v.product_id = t.product_id
   ORDER BY rrf_score DESC
   LIMIT 100
 )
 SELECT p.product_id, p.name, p.description, r.score
 FROM ai.rank(
   model_id => 'bge-reranker-v2-m3',
-  search_string => 'music',
+  search_string => 'warm fuzzy earmuffs',
   documents => (SELECT ARRAY_AGG(description ORDER BY rank_id) FROM hybrid_candidates),
   top_n => 100
 ) r
 JOIN hybrid_candidates p ON r.index = p.rank_id
 ORDER BY r.score DESC;
-```
-
 ```
 
 ### 9. Scaling with Read Pools
@@ -658,8 +752,9 @@ SELECT count(*) FROM product WHERE embedding IS NOT NULL;
 Use this Python script to measure Latency and QPS.
 
 1.  **Install Dependencies**:
+    Ensure your `pyproject.toml` includes `psycopg2-binary`, `numpy`, and `google-cloud-aiplatform`.
     ```bash
-    pip install psycopg2-binary numpy google-cloud-aiplatform
+    uv sync
     ```
 
 2.  **Create `benchmark.py`**:
