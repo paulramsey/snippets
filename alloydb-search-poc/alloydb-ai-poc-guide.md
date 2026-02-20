@@ -17,47 +17,100 @@ Run the following commands in Cloud Shell to set up your environment and infrast
 Define the variables for your resources to ensure consistency across commands.
 
 ```bash
-export PROJECT_ID=$(gcloud config get-value project)
-export REGION="us-central1"
+# 1. Login to Google Cloud
+gcloud auth login
+
+# 2. Login to Application Default Credentials (for Python/Client libraries)
+gcloud auth application-default login
+
+# 3. Set Project ID
+export PROJECT_ID="YOUR_PROJECT_ID" # Replace with your project ID
+gcloud config set project ${PROJECT_ID}
+
+# 4. Set Quota Project for ADC (Crucial for Vertex AI API calls)
+gcloud auth application-default set-quota-project ${PROJECT_ID}
+
+# 5. Set Common Variables
+export REGION="us-east4"
 export CLUSTER_ID="alloydb-ai-poc-cluster"
 export INSTANCE_ID="alloydb-ai-poc-primary"
-export PASSWORD="supersecretpassword" # Change this!
+export PASSWORD="SuperSecretPassword123!" # Change this!
 ```
 
 ### 2. Enable Required APIs
 Enable AlloyDB, Vertex AI, and Service Usage APIs.
 
 ```bash
+# 2. Enable APIs
 gcloud services enable \
   alloydb.googleapis.com \
   aiplatform.googleapis.com \
+  compute.googleapis.com \
+  servicenetworking.googleapis.com \
   serviceusage.googleapis.com \
+  developerknowledge.googleapis.com \
+  --project=${PROJECT_ID}
+
+# 3. Configure Networking (Private Services Access - Required)
+# We create a custom VPC to ensure a clean network environment and avoid 'default' network issues.
+
+# 1. Create a custom VPC
+gcloud compute networks create alloydb-vpc \
+  --project=${PROJECT_ID} \
+  --subnet-mode=auto \
+  --description="VPC for AlloyDB POC"
+
+# 2. Allocate an IP range for Google services (Private Services Access)
+gcloud compute addresses create google-managed-services-alloydb-vpc \
+  --global \
+  --purpose=VPC_PEERING \
+  --prefix-length=16 \
+  --description="Peering for AlloyDB" \
+  --network=alloydb-vpc \
+  --project=${PROJECT_ID}
+
+# 3. Create the private connection
+gcloud services vpc-peerings connect \
+  --service=servicenetworking.googleapis.com \
+  --ranges=google-managed-services-alloydb-vpc \
+  --network=alloydb-vpc \
   --project=${PROJECT_ID}
 ```
 
 ### 3. Create AlloyDB Cluster and Instance
-Create a cluster and a primary instance. We enable **Public IP** to simplify connectivity from Cloud Shell (or external tools) for this POC.
 
 ```bash
-# Create Cluster
+# Set environment variables
+export CLUSTER_ID="alloydb-ai-poc-cluster"
+export INSTANCE_ID="alloydb-ai-poc-primary"
+export REGION="us-east4" # Using us-east4 for Vertex AI Model Garden availability
+export PASSWORD="SuperSecretPassword@123" # Change this!
+
+# Create Cluster (Linked to the Custom VPC)
 gcloud alloydb clusters create ${CLUSTER_ID} \
   --region=${REGION} \
   --password=${PASSWORD} \
+  --network=projects/${PROJECT_ID}/global/networks/alloydb-vpc \
   --project=${PROJECT_ID}
 
 
-# Create Primary Instance (8 vCPU C4A Machine type)
+# Get Current IP for Authorized Networks
+MY_IP=$(curl -s https://ipv4.icanhazip.com)
+
+# Create Primary Instance (16 vCPU C4A Machine type)
 # Enabling public-ip for easier access
 # REQUIRED: Set flags for auto-embeddings and ML integration
 gcloud alloydb instances create ${INSTANCE_ID} \
   --cluster=${CLUSTER_ID} \
   --region=${REGION} \
   --cpu-count=16 \
-  --machine-type=c4a-highmem-16 \
-  --assign-ip \
+  --instance-type=PRIMARY \
+  --machine-type=c4a-highmem-16-lssd \
+  --authorized-external-networks=${MY_IP}/32 \
   --ssl-mode=ALLOW_UNENCRYPTED_AND_ENCRYPTED \
-  --database-flags=google_ml_integration.enable_model_support=on,google_ml_integration.enable_faster_embedding_generation=on,scann.enable_zero_knob_index_creation=on,google_columnar_engine.enabled=on \
-  --project=${PROJECT_ID}
+  --database-flags=google_ml_integration.enable_model_support=on,google_ml_integration.enable_faster_embedding_generation=on,scann.enable_zero_knob_index_creation=on,google_columnar_engine.enabled=on,password.enforce_complexity=on \
+  --project=${PROJECT_ID} \
+  --assign-inbound-public-ip=ASSIGN_IPV4
 
 ```
 
@@ -133,28 +186,27 @@ For this POC, we will use the **Marqo-GS-10M** dataset from Hugging Face. To han
 
 > **Note**: This strategy assumes the CSV matches the Marqo dataset schema (headers: `image`, `query`, `product_id`, `position`, `title`, `paix_id`, `score_linear`, `score_reciprocal`, `no_score`, `query_id`).
 
-#### B. Create Staging Table
-Create a temporary table that matches the CSV columns primarily to facilitate the import.
+#### B. Create Final Table
+Create the optimized `product` table immediately. We use a **surrogate primary key** (`id`) for efficient indexing and storage, while keeping the original ID as `product_id`.
 
 ```sql
-DROP TABLE IF EXISTS marqo_staging;
+DROP TABLE IF EXISTS product CASCADE;
 
-CREATE TABLE marqo_staging (
-    image TEXT,
-    query TEXT,
-    product_id TEXT,
-    position INT,
-    title TEXT,
-    paix_id TEXT,
-    score_linear INT,
-    score_reciprocal FLOAT,
-    no_score INT,
-    query_id TEXT
+CREATE TABLE product (
+  id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
+  product_id VARCHAR(255),
+  name TEXT,
+  description TEXT,
+  category VARCHAR(255),
+  image_url TEXT,
+  embedding vector(3072) DEFAULT NULL
 );
 ```
 
 #### C. Bulk Import (gcloud)
-Use `gcloud` to import the CSV into the staging table.
+Use `gcloud` to import the CSV directly into the `product` table.
+*   **Important**: This assumes your CSV has **5 columns** in this specific order: `product_id`, `title`, `description` (or title again), `category`, `image_url`.
+*   We use the `--columns` flag to map input data to specific table columns, skipping `id` (auto-generated) and `embedding` (generated later).
 
 **Reference**: [gcloud alloydb clusters import](https://docs.cloud.google.com/sdk/gcloud/reference/alloydb/clusters/import)
 
@@ -176,48 +228,17 @@ gcloud alloydb clusters import ${CLUSTER_ID} \
   --region=${REGION} \
   --gcs-uri=gs://your-bucket/path/to/marqo_subset.csv \
   --database=postgres \
-  --table=marqo_staging \
+  --table=product \
+  --columns=product_id,name,description,category,image_url \
   --csv \
   --user=postgres \
   --project=${PROJECT_ID}
 ```
 
-#### D. Transform & Load to Final Table
-Create the optimized `product` table and populate it from the staging table. We add a **surrogate primary key** (`id`) for efficient indexing and storage, while keeping the original ID as `product_id`.
-
-```sql
--- 1. Create Final Table
-DROP TABLE IF EXISTS product CASCADE;
-
-CREATE TABLE product (
-  id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
-  product_id VARCHAR(255),
-  name TEXT,
-  description TEXT,
-  category VARCHAR(255),
-  image_url TEXT,
-  embedding vector(768) DEFAULT NULL
-);
-
--- 2. Insert Data (Transform)
--- Map: product_id -> product_id, title -> name, title -> description (as proxy), query -> category
--- We EXCLUDE 'id' to allow PostgreSQL to auto-generate the surrogate key.
-INSERT INTO product (product_id, name, description, category, image_url)
-SELECT 
-    DISTINCT product_id, 
-    title, 
-    title, -- Using title as description since dataset lacks long text
-    query, 
-    image
-FROM marqo_staging
-ON CONFLICT DO NOTHING; -- Handle potential duplicates if constraint existed (no unique on product_id yet, but good practice)
-
--- 3. Cleanup Staging
-DROP TABLE marqo_staging;
-```
-
 #### E. Generate Embeddings
 Backfill embeddings for the new data.
+
+> **Cost Note**: Generating embeddings for large datasets incurs Vertex AI costs. Estimate your costs here: [Vertex AI Pricing](https://cloud.google.com/vertex-ai/generative-ai/pricing#embedding-models)
 
 ```sql
 -- Configure and Trigger Auto-Embeddings
@@ -267,7 +288,7 @@ Find products similar to "music" (semantic search).
 SELECT product_id, name, description 
 FROM product 
 ORDER BY embedding <=> embedding('gemini-embedding-001', 'music')::vector 
-LIMIT 3;
+LIMIT 100;
 ```
 
 Find "Toys" similar to "music" (Filtered Search).
@@ -279,7 +300,7 @@ SELECT product_id, name, description, category
 FROM product
 WHERE category = 'Toys'
 ORDER BY embedding <=> embedding('gemini-embedding-001', 'music')::vector 
-LIMIT 3;
+LIMIT 100;
 ```
 
 ### 6. Perform Hybrid Search
@@ -327,7 +348,7 @@ SELECT COALESCE(v.product_id, t.product_id) AS product_id,
 FROM vector_search v
 FULL OUTER JOIN text_search t ON v.id = t.id
 ORDER BY rrf_score DESC
-LIMIT 5;
+LIMIT 100;
 ```
 
 ### 7. Perform Reranking (Vertex AI)
@@ -336,28 +357,46 @@ Re-rank the top predictions using the Vertex AI Ranking API for higher precision
 **Note:** Ensure you have the `semantic-ranker-512@latest` model enabled in Vertex AI if needed, though typically standard models work out of the box with the API.
 
 ```sql
--- Reranking Example
-WITH initial_retrieval AS (
-  -- 1. Retrieve top 10 candidates using fast vector search
+-- Reranking Example with Hybrid Candidates
+WITH vector_search AS (
   SELECT id, product_id, name, description,
-         ROW_NUMBER() OVER () AS rank_id
+         RANK () OVER (ORDER BY embedding <=> embedding('gemini-embedding-001', 'toys for kids')::vector) AS rank
   FROM product
   ORDER BY embedding <=> embedding('gemini-embedding-001', 'toys for kids')::vector
-  LIMIT 10
+  LIMIT 100
+),
+text_search AS (
+  SELECT id, product_id, name, description,
+         RANK () OVER (ORDER BY ts_rank(fts_document, to_tsquery('english', 'toys for kids')) DESC) AS rank
+  FROM product
+  WHERE fts_document @@ to_tsquery('english', 'toys for kids')
+  ORDER BY ts_rank(fts_document, to_tsquery('english', 'toys for kids')) DESC
+  LIMIT 100
+),
+hybrid_candidates AS (
+  SELECT COALESCE(v.product_id, t.product_id) AS product_id,
+         COALESCE(v.name, t.name) AS name,
+         COALESCE(v.description, t.description) AS description,
+         COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + t.rank), 0.0) AS rrf_score,
+         ROW_NUMBER() OVER (ORDER BY (COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + t.rank), 0.0)) DESC) AS rank_id
+  FROM vector_search v
+  FULL OUTER JOIN text_search t ON v.id = t.id
+  ORDER BY rrf_score DESC
+  LIMIT 100 -- Top 100 candidates for reranking
 ),
 reranked_results AS (
-  -- 2. Use Vertex AI Ranking API to re-score the candidates
+  -- Use Vertex AI Ranking API to re-score the hybrid candidates
   SELECT index, score
   FROM ai.rank(
     model_id => 'semantic-ranker-default@latest',
     search_string => 'toys for kids',
-    documents => (SELECT ARRAY_AGG(description ORDER BY rank_id) FROM initial_retrieval),
-    top_n => 5
+    documents => (SELECT ARRAY_AGG(description ORDER BY rank_id) FROM hybrid_candidates),
+    top_n => 10
   )
 )
--- 3. Join back to get final details
+-- Join back to get final details
 SELECT p.product_id, p.name, p.description, r.score AS rerank_score
-FROM initial_retrieval p
+FROM hybrid_candidates p
 JOIN reranked_results r ON p.rank_id = r.index
 ORDER BY r.score DESC;
 ```
@@ -372,7 +411,7 @@ Use `gcloud` to deploy the models using the Hugging Face Text Embeddings Inferen
 
 ```bash
 # 1. Set Common Variables
-export REGION="us-central1"
+export REGION="us-east4"
 export ENDPOINT_ID="bge-m3-endpoint"
 export RERANKER_ENDPOINT_ID="bge-reranker-endpoint"
 # Using g2-standard-8 (1x L4 GPU) for best performance
@@ -452,10 +491,10 @@ $$;
 
 -- 3. Register BGE-M3 Model
 -- Replace ENDPOINT_ID with your actual Vertex AI Endpoint ID (numeric)
--- Get it via: gcloud ai endpoints list --region=us-central1 --filter="display_name=bge-m3-endpoint"
+-- Get it via: gcloud ai endpoints list --region=us-east4 --filter="display_name=bge-m3-endpoint"
 CALL google_ml.create_model(
   model_id => 'bge-m3',
-  model_request_url => 'https://us-central1-aiplatform.googleapis.com/v1/projects/' || current_setting('google_ml_integration.project_id') || '/locations/us-central1/endpoints/YOUR_BGE_M3_ENDPOINT_ID:predict',
+  model_request_url => 'https://us-east4-aiplatform.googleapis.com/v1/projects/' || current_setting('google_ml_integration.project_id') || '/locations/us-east4/endpoints/YOUR_BGE_M3_ENDPOINT_ID:predict',
   model_provider => 'custom',
   model_type => 'text_embedding',
   model_in_transform_fn => 'bge_m3_input_transform',
@@ -496,7 +535,7 @@ $$;
 -- Replace YOUR_RERANKER_ENDPOINT_ID with actual numeric ID
 CALL google_ml.create_model(
   model_id => 'bge-reranker-v2-m3',
-  model_request_url => 'https://us-central1-aiplatform.googleapis.com/v1/projects/' || current_setting('google_ml_integration.project_id') || '/locations/us-central1/endpoints/YOUR_RERANKER_ENDPOINT_ID:predict',
+  model_request_url => 'https://us-east4-aiplatform.googleapis.com/v1/projects/' || current_setting('google_ml_integration.project_id') || '/locations/us-east4/endpoints/YOUR_RERANKER_ENDPOINT_ID:predict',
   model_provider => 'custom',
   model_type => 'reranking',
   model_in_transform_fn => 'bge_reranker_input_transform',
@@ -524,112 +563,55 @@ SELECT ai.initialize_embeddings(
 -- 1. Gemini Embedding
 SELECT product_id, name, description, 1 - (embedding <=> embedding('gemini-embedding-001', 'music')::vector) as score
 FROM product
-ORDER BY score DESC LIMIT 3;
+ORDER BY score DESC LIMIT 100;
 
 -- 2. BGE-M3 Embedding
 SELECT product_id, name, description, 1 - (embedding_bge <=> embedding('bge-m3', 'music')::vector) as score
 FROM product
-ORDER BY score DESC LIMIT 3;
+ORDER BY score DESC LIMIT 100;
 
--- 3. Reranking Top 10 with BGE-Reranker
-WITH candidates AS (
+```sql
+-- 3. Reranking Top 10 with BGE-Reranker (Using Hybrid Candidates)
+WITH vector_search AS (
   SELECT id, product_id, name, description,
-         ROW_NUMBER() OVER (ORDER BY embedding_bge <=> embedding('bge-m3', 'music')::vector) as rank_id
+         RANK () OVER (ORDER BY embedding_bge <=> embedding('bge-m3', 'music')::vector) as rank
   FROM product
   ORDER BY embedding_bge <=> embedding('bge-m3', 'music')::vector
-  LIMIT 10
+  LIMIT 100
+),
+text_search AS (
+  SELECT id, product_id, name, description,
+         RANK () OVER (ORDER BY ts_rank(fts_document, to_tsquery('english', 'music')) DESC) AS rank
+  FROM product
+  WHERE fts_document @@ to_tsquery('english', 'music')
+  ORDER BY ts_rank(fts_document, to_tsquery('english', 'music')) DESC
+  LIMIT 100
+),
+hybrid_candidates AS (
+  SELECT COALESCE(v.product_id, t.product_id) AS product_id,
+         COALESCE(v.name, t.name) AS name,
+         COALESCE(v.description, t.description) AS description,
+         COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + t.rank), 0.0) AS rrf_score,
+         ROW_NUMBER() OVER (ORDER BY (COALESCE(1.0 / (60 + v.rank), 0.0) + COALESCE(1.0 / (60 + t.rank), 0.0)) DESC) AS rank_id
+  FROM vector_search v
+  FULL OUTER JOIN text_search t ON v.id = t.id
+  ORDER BY rrf_score DESC
+  LIMIT 100
 )
 SELECT p.product_id, p.name, p.description, r.score
 FROM ai.rank(
   model_id => 'bge-reranker-v2-m3',
   search_string => 'music',
-  documents => (SELECT ARRAY_AGG(description ORDER BY rank_id) FROM candidates),
-  top_n => 3
+  documents => (SELECT ARRAY_AGG(description ORDER BY rank_id) FROM hybrid_candidates),
+  top_n => 100
 ) r
-JOIN candidates p ON r.index = p.rank_id;
+JOIN hybrid_candidates p ON r.index = p.rank_id
+ORDER BY r.score DESC;
 ```
 
 ```
 
-### 9. Fine-Tune Your Models (Optional)
-Improve performance on your specific domain by fine-tuning the models.
-
-#### A. Preparation
-Install the required libraries:
-```bash
-pip install -U FlagEmbedding[finetune] transformers torch
-```
-
-**Data Format (JSONL):**
-*   **Embeddings**: `{"query": "text", "pos": ["positive text"], "neg": ["negative text"]}`
-*   **Reranker**: `{"query": "text", "pos": ["positive text"], "neg": ["negative text"]}`
-
-#### B. Fine-Tune BGE-M3 (Embeddings)
-Use `torchrun` to fine-tune the embedding model.
-
-```bash
-torchrun --nproc_per_node 1 \
--m FlagEmbedding.baai_general_embedding.finetune.run \
---output_dir ./bge-m3-finetuned \
---model_name_or_path BAAI/bge-m3 \
---train_data ./train.jsonl \
---learning_rate 1e-5 \
---fp16 \
---num_train_epochs 5 \
---per_device_train_batch_size 4 \
---dataloader_drop_last True \
---normlized True \
---temperature 0.02 \
---query_max_len 512 \
---passage_max_len 512 \
---train_group_size 2 \
---negatives_cross_device \
---logging_steps 10 \
---save_steps 1000 \
---save_total_limit 2
-```
-
-#### C. Fine-Tune BGE-Reranker
-Use `torchrun` to fine-tune the reranker.
-
-```bash
-torchrun --nproc_per_node 1 \
--m FlagEmbedding.reranker.run \
---output_dir ./bge-reranker-finetuned \
---model_name_or_path BAAI/bge-reranker-v2-m3 \
---train_data ./train.jsonl \
---learning_rate 2e-5 \
---fp16 \
---num_train_epochs 3 \
---per_device_train_batch_size 1 \
---gradient_accumulation_steps 4 \
---train_group_size 4 \
---max_len 512 \
---weight_decay 0.01 \
---logging_steps 10 \
---save_steps 1000 \
---save_total_limit 2
-```
-
-#### D. Upload to Hugging Face
-Once trained, upload your model to Hugging Face to deploy it using the steps in **Part 8**.
-
-```bash
-pip install huggingface_hub
-huggingface-cli login
-
-# Upload Embeddings Model
-huggingface-cli upload your-username/bge-m3-custom ./bge-m3-finetuned
-
-# Upload Reranker Model
-huggingface-cli upload your-username/bge-reranker-custom ./bge-reranker-finetuned
-```
-
-**Deploy:** Update the `MODEL_ID` in **Part 8** to `your-username/bge-m3-custom` or `your-username/bge-reranker-custom`.
-
-```
-
-### 10. Scaling with Read Pools
+### 9. Scaling with Read Pools
 To handle high-throughput workloads (like "bid list" uploads) without impacting the primary instance's search performance, use **Read Pool** instances.
 
 1.  **Create a Read Pool**:
@@ -651,7 +633,7 @@ To handle high-throughput workloads (like "bid list" uploads) without impacting 
     PGPASSWORD=${PASSWORD} psql -h ${READ_POOL_IP} -U postgres postgres
     ```
 
-### 11. Performance Verification
+### 10. Performance Verification
 Verify that the solution meets the POC latency (<20ms) and QPS (>25) targets.
 
 #### A. Generate Synthetic Data
@@ -715,7 +697,7 @@ Use this Python script to measure Latency and QPS.
         query_vector = cur.fetchone()[0]
         
         # 2. Prepare the statement
-        cur.execute(f"PREPARE search_plan (vector) AS SELECT id FROM product ORDER BY embedding <=> $1 LIMIT 10")
+        cur.execute(f"PREPARE search_plan (vector) AS SELECT id FROM product ORDER BY embedding <=> $1 LIMIT 100")
         
         local_latencies = []
         
@@ -766,11 +748,40 @@ Use this Python script to measure Latency and QPS.
 
 ## Cleanup
 
-When finished, delete the cluster to avoid charges.
+1.  **Delete AlloyDB Cluster**:
+    ```bash
+    gcloud alloydb clusters delete ${CLUSTER_ID} --region=${REGION} --force --project=${PROJECT_ID}
+    ```
 
-```bash
-gcloud alloydb clusters delete ${CLUSTER_ID} --region=${REGION} --force --project=${PROJECT_ID}
-```
+2.  **Delete Vertex AI Endpoints & Models**:
+    *   **Option A (Console)**: Go to [Vertex AI Online Prediction](https://console.cloud.google.com/vertex-ai/online-prediction/endpoints), undeploy models from endpoints, delete endpoints, then delete models in [Model Registry](https://console.cloud.google.com/vertex-ai/models).
+    *   **Option B (CLI)**:
+        ```bash
+        # Helper function to cleanup an endpoint
+        cleanup_endpoint() {
+          DISPLAY_NAME=$1
+          echo "Cleaning up $DISPLAY_NAME..."
+          EP_NAME=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=${DISPLAY_NAME}" --format="value(name)" --project=${PROJECT_ID} | head -n1)
+          if [ -n "$EP_NAME" ]; then
+            # Undeploy all models
+            for DEPLOYED_ID in $(gcloud ai endpoints describe $EP_NAME --region=${REGION} --format="value(deployedModels.id)" --project=${PROJECT_ID} | tr ';' ' '); do
+              echo "Undeploying $DEPLOYED_ID..."
+              gcloud ai endpoints undeploy-model $EP_NAME --deployed-model-id=$DEPLOYED_ID --region=${REGION} --project=${PROJECT_ID} --quiet
+            done
+            # Delete endpoint
+            echo "Deleting endpoint..."
+            gcloud ai endpoints delete $EP_NAME --region=${REGION} --project=${PROJECT_ID} --quiet
+          fi
+        }
+
+        # Run Cleanup
+        cleanup_endpoint "bge-m3-endpoint"
+        cleanup_endpoint "bge-reranker-endpoint"
+
+        # Delete Models
+        gcloud ai models list --region=${REGION} --filter="display_name=bge-m3-model" --format="value(name)" --project=${PROJECT_ID} | xargs -r gcloud ai models delete --region=${REGION} --project=${PROJECT_ID} --quiet
+        gcloud ai models list --region=${REGION} --filter="display_name=bge-reranker-model" --format="value(name)" --project=${PROJECT_ID} | xargs -r gcloud ai models delete --region=${REGION} --project=${PROJECT_ID} --quiet
+        ```
 
 ## References
 
@@ -789,3 +800,4 @@ gcloud alloydb clusters delete ${CLUSTER_ID} --region=${REGION} --force --projec
 *   [FlagEmbedding (GitHub)](https://github.com/FlagOpen/FlagEmbedding)
 *   [Marqo/marqo-GS-10M (Hugging Face)](https://huggingface.co/datasets/Marqo/marqo-GS-10M)
 *   [Grant IAM permissions for Vertex AI](https://docs.cloud.google.com/alloydb/docs/ai/configure-vertex-ai#grant-iam-permissions)
+*   [Import a CSV file into AlloyDB](https://docs.cloud.google.com/alloydb/docs/import-csv-file)
