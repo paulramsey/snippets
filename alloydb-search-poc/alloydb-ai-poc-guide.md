@@ -2,16 +2,9 @@
 
 This guide provides an end-to-end, step-by-step walkthrough to set up an AlloyDB Cluster, integrate it with Vertex AI, and perform a vector search. The steps are designed to be runnable from **Cloud Shell** (using `gcloud` and `psql`) or the **AlloyDB Console** (AlloyDB Studio).
 
-## Prerequisites
-
-1.  **Google Cloud Project**: Ensure you have a project with billing enabled.
-2.  **Cloud Shell**: Open [Cloud Shell](https://shell.cloud.google.com/).
-3.  **APIs**: Enable the required APIs.
-4.  **Database Flags**: Ensure `google_ml_integration.enable_model_support=on`, `google_ml_integration.enable_faster_embedding_generation=on`, and `scann.enable_zero_knob_index_creation=on` are set (done in the creation step below).
-
 ## Part 0: Create a New Project (Recommended)
 
-To allow for a smooth setup and avoid IP address or network conflicts, **we strongly recommend creating a fresh Google Cloud Project** for this POC.
+To allow for a smooth setup, avoid IP address or network conflicts, and easily tearn down the environment when you are done, **we strongly recommend creating a fresh Google Cloud Project** for this POC.
 
 1.  **Create Project**: Go to [Manage Resources](https://console.cloud.google.com/cloud-resource-manager) and create a new project (e.g., `alloydb-ai-poc`).
 2.  **Enable Billing**: Ensure billing is enabled for the new project.
@@ -58,6 +51,8 @@ gcloud services enable \
   developerknowledge.googleapis.com \
   dns.googleapis.com \
   discoveryengine.googleapis.com \
+  cloudbuild.googleapis.com \
+  artifactregistry.googleapis.com \
   --project=${PROJECT_ID}
 
 # 3. Configure Networking (Private Services Access - Required)
@@ -138,11 +133,6 @@ gcloud dns record-sets create "*.googleapis.com." \
 ### 3. Create AlloyDB Cluster and Instance
 
 ```bash
-# Set environment variables
-export CLUSTER_ID="alloydb-ai-poc-cluster"
-export INSTANCE_ID="alloydb-ai-poc-primary"
-export REGION="us-central1" # Using us-central1 for Vertex AI Model Garden availability
-export PASSWORD="SuperSecretPassword@123" # Change this!
 
 # Create Cluster (Linked to the Custom VPC)
 gcloud alloydb clusters create ${CLUSTER_ID} \
@@ -246,6 +236,8 @@ GRANT INSERT, UPDATE, DELETE ON google_ml.embed_gen_settings TO postgres;
 
 -- TEST: Verify Vertex AI Integration by generating a sample embedding
 -- This confirms the Service Account has the correct 'Vertex AI User' role.
+-- If you get a permission denied error, wait a minute and try again. It takes time for Vertex AI permissions to propagate.
+
 SELECT embedding('gemini-embedding-001', 'integration test')::vector AS test_embedding;
 ```
 
@@ -262,7 +254,6 @@ For this POC, we will use the **Marqo-GS-10M** dataset from Hugging Face. To han
     We will use `uv` to manage Python dependencies for the conversion script.
     
     ```bash
-    ```bash
     # Run the conversion script
     # Dependencies (pandas, pyarrow, google-cloud-storage, etc.) are managed by pyproject.toml
     # This script will automatically:
@@ -270,7 +261,13 @@ For this POC, we will use the **Marqo-GS-10M** dataset from Hugging Face. To han
     # 2. Extract images from the dataset and upload them to your GCS bucket
     # 3. Generate the CSV with GCS URIs for the images
     
+    cd alloydb-search-poc/
     export BUCKET_NAME="alloydb-poc-loading-${PROJECT_ID}"
+    
+    # Create the bucket if it doesn't exist
+    gcloud storage buckets create gs://${BUCKET_NAME} --project=${PROJECT_ID} --location=${REGION}
+    
+    # Convert the dataset to a CSV with GCS URIs for the images
     uv run convert_parquet_to_csv.py --bucket ${BUCKET_NAME}
     ```
 
@@ -375,7 +372,7 @@ For reference, manual index creation requires you to determine and set parameter
 ```
 
 ### 5. Perform Vector Search
-Find products similar to "music" (semantic search).
+Find products similar to "soft winter clothes" (Semantic Search).
 
 ```sql
 -- Simple Vector Search
@@ -385,7 +382,7 @@ ORDER BY embedding <=> embedding('gemini-embedding-001', 'soft winter clothes'):
 LIMIT 100;
 ```
 
-Find "Earmuffs" similar to "pink fluffy" (Filtered Search).
+Find "Earmuffs" similar to "Warm and furry" (Filtered Semantic Search).
 *Note: We use the `category` column for filtering instead of a separate inventory table.*
 
 ```sql
@@ -512,9 +509,45 @@ export ENDPOINT_ID="bge-m3-endpoint"
 export RERANKER_ENDPOINT_ID="bge-reranker-endpoint"
 # Using g2-standard-8 (1x L4 GPU) for best performance
 export MACHINE_TYPE="g2-standard-8"
-export ACCELERATOR_TYPE="NVIDIA_L4"
+export ACCELERATOR_TYPE="nvidia-l4"
 export ACCELERATOR_COUNT=1
-export CONTAINER_URI="us-docker.pkg.dev/deeplearning-platform-release/gcr.io/huggingface-text-embeddings-inference-cu122.1-4.ubuntu2204"
+
+# The TEI 1.7 container fixes a known bug with relative URLs on HF Hub.
+# Vertex AI requires images to be in Artifact Registry, so we mirror it locally.
+gcloud artifacts repositories create tei-repo \
+  --repository-format=docker \
+  --location=${REGION} \
+  --project=${PROJECT_ID} || true
+
+# Grant Cloud Build permission to push to Artifact Registry
+PROJECT_NUMBER=$(gcloud projects describe ${PROJECT_ID} --format="value(projectNumber)")
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com" \
+  --role="roles/artifactregistry.writer" \
+  --condition=None
+
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/artifactregistry.writer" \
+  --condition=None
+
+# Define a Cloud Build configuration to pull and push the image
+cat << 'EOF' > cloudbuild.yaml
+steps:
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['pull', 'ghcr.io/huggingface/text-embeddings-inference:89-1.7']
+- name: 'gcr.io/cloud-builders/docker'
+  args: ['tag', 'ghcr.io/huggingface/text-embeddings-inference:89-1.7', '$_DESTINATION_IMAGE']
+images:
+- '$_DESTINATION_IMAGE'
+EOF
+
+# Use Cloud Build to mirror the image without needing Docker installed locally
+gcloud builds submit --no-source --config cloudbuild.yaml \
+  --substitutions=_DESTINATION_IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/tei-repo/tei:1.7" \
+  --project=${PROJECT_ID}
+
+export CONTAINER_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/tei-repo/tei:1.7"
 
 # 2. Deploy BAAI/bge-m3 (Embeddings)
 gcloud ai endpoints create --display-name=${ENDPOINT_ID} --region=${REGION} --project=${PROJECT_ID}
@@ -564,13 +597,17 @@ We need to register these endpoints with AlloyDB using `google_ml.create_model`.
 
 ```sql
 -- 1. Input Transform for BGE-M3 (Embeddings)
--- Wraps input text into {"instances": ["text"]}
+-- Wraps input text into {"instances": [{"inputs": "text"}]} for Vertex AI TEI
 CREATE OR REPLACE FUNCTION bge_m3_input_transform(model_id VARCHAR(100), input_text TEXT)
 RETURNS JSON
 LANGUAGE plpgsql
 AS $$
+#variable_conflict use_variable
+DECLARE
+  transformed_input JSON;
 BEGIN
-  RETURN json_build_object('instances', json_build_array(input_text));
+  SELECT json_build_object('instances', json_build_array(json_build_object('inputs', input_text)))::JSON INTO transformed_input;
+  RETURN transformed_input;
 END;
 $$;
 
@@ -580,8 +617,11 @@ CREATE OR REPLACE FUNCTION bge_m3_output_transform(model_id VARCHAR(100), respon
 RETURNS REAL[]
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  transformed_output REAL[];
 BEGIN
-  RETURN ARRAY(SELECT json_array_elements_text(response_json->'predictions'->0));
+  SELECT ARRAY(SELECT json_array_elements_text(response_json->'predictions'->0)) INTO transformed_output;
+  RETURN transformed_output;
 END;
 $$;
 
@@ -598,19 +638,17 @@ CALL google_ml.create_model(
 );
 
 -- 4. Input Transform for BGE-Reranker (Reranking)
--- Wraps input into {"instances": [{"query": "q", "text": "d"}, ...]}
+-- Wraps input into {"instances": [{"texts": ["..."], "query": "..."}]}
 CREATE OR REPLACE FUNCTION bge_reranker_input_transform(model_id VARCHAR(100), search_string TEXT, documents TEXT[], top_n INT DEFAULT NULL)
 RETURNS JSON
 LANGUAGE plpgsql
 AS $$
+#variable_conflict use_variable
 DECLARE
-  instances JSON;
+  transformed_input JSON;
 BEGIN
-  SELECT json_agg(json_build_object('query', search_string, 'text', doc))
-  INTO instances
-  FROM unnest(documents) AS doc;
-  
-  RETURN json_build_object('instances', instances);
+  SELECT json_build_object('instances', json_build_array(json_build_object('query', search_string, 'texts', array_to_json(documents))))::JSON INTO transformed_input;
+  RETURN transformed_input;
 END;
 $$;
 
@@ -620,6 +658,8 @@ CREATE OR REPLACE FUNCTION bge_reranker_output_transform(model_id VARCHAR(100), 
 RETURNS TABLE (index INT, score REAL)
 LANGUAGE plpgsql
 AS $$
+DECLARE
+  transformed_output JSON;
 BEGIN
   RETURN QUERY
   SELECT (row_number() OVER ())::INT AS index, (elem::text)::REAL AS score
