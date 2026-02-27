@@ -682,8 +682,9 @@ $$;
 CALL google_ml.create_model(
   model_id => 'bge-m3',
   model_request_url => 'https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1/endpoints/YOUR_BGE_M3_ENDPOINT_ID:rawPredict',
-  model_provider => 'custom',
+  model_provider => 'google',
   model_type => 'text_embedding',
+  model_auth_type => 'alloydb_service_agent_iam',
   model_in_transform_fn => 'bge_m3_input_transform',
   model_out_transform_fn => 'bge_m3_output_transform'
 );
@@ -723,8 +724,9 @@ $$;
 CALL google_ml.create_model(
   model_id => 'bge-reranker-v2-m3',
   model_request_url => 'https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1/endpoints/YOUR_RERANKER_ENDPOINT_ID:rawPredict',
-  model_provider => 'custom',
+  model_provider => 'google',
   model_type => 'reranking',
+  model_auth_type => 'alloydb_service_agent_iam',
   model_in_transform_fn => 'bge_reranker_input_transform',
   model_out_transform_fn => 'bge_reranker_output_transform'
 );
