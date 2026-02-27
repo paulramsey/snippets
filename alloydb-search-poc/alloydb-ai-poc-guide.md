@@ -80,6 +80,13 @@ gcloud services vpc-peerings connect \
   --network=alloydb-vpc \
   --project=${PROJECT_ID}
 
+# 4. Export custom routes so AlloyDB can use the PSC endpoint to access custom Vertex AI models
+gcloud compute networks peerings update servicenetworking-googleapis-com \
+  --network=alloydb-vpc \
+  --export-custom-routes \
+  --import-custom-routes \
+  --project=${PROJECT_ID}
+
 # 4. Configure Private Service Connect (PSC) for Google APIs
 # Instead of routing over the public internet (NAT), we use PSC to access Google APIs (Vertex AI) privately.
 
@@ -550,17 +557,20 @@ gcloud builds submit --no-source --config cloudbuild.yaml \
 export CONTAINER_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/tei-repo/tei:1.7"
 
 # 2. Deploy BAAI/bge-m3 (Embeddings)
-gcloud ai endpoints create --display-name=${ENDPOINT_ID} --region=${REGION} --project=${PROJECT_ID}
-ENDPOINT_RESOURCE_NAME=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=${ENDPOINT_ID}" --format="value(name)" --project=${PROJECT_ID})
+gcloud ai endpoints create --display-name=bge-m3-endpoint --region=${REGION} --project=${PROJECT_ID}
+ENDPOINT_RESOURCE_NAME=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=bge-m3-endpoint" --format="value(name)" --project=${PROJECT_ID})
 
 gcloud ai models upload \
   --container-image-uri=${CONTAINER_URI} \
   --container-env-vars="MODEL_ID=BAAI/bge-m3" \
-  --display-name="bge-m3-model" \
+  --container-ports=80 \
+  --container-health-route="/health" \
+  --container-predict-route="/embed" \
+  --display-name="bge-m3-model-routes-fixed" \
   --region=${REGION} \
   --project=${PROJECT_ID}
 
-MODEL_ID=$(gcloud ai models list --region=${REGION} --filter="display_name=bge-m3-model" --format="value(name)" --project=${PROJECT_ID} | head -n 1)
+MODEL_ID=$(gcloud ai models list --region=${REGION} --filter="display_name=bge-m3-model-routes-fixed" --format="value(name)" --project=${PROJECT_ID} | head -n 1)
 
 gcloud ai endpoints deploy-model ${ENDPOINT_RESOURCE_NAME} \
   --model=${MODEL_ID} \
@@ -571,17 +581,20 @@ gcloud ai endpoints deploy-model ${ENDPOINT_RESOURCE_NAME} \
   --project=${PROJECT_ID}
 
 # 3. Deploy BAAI/bge-reranker-v2-m3 (Reranking)
-gcloud ai endpoints create --display-name=${RERANKER_ENDPOINT_ID} --region=${REGION} --project=${PROJECT_ID}
-RERANKER_ENDPOINT_RESOURCE_NAME=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=${RERANKER_ENDPOINT_ID}" --format="value(name)" --project=${PROJECT_ID})
+gcloud ai endpoints create --display-name=bge-reranker-endpoint --region=${REGION} --project=${PROJECT_ID}
+RERANKER_ENDPOINT_RESOURCE_NAME=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=bge-reranker-endpoint" --format="value(name)" --project=${PROJECT_ID})
 
 gcloud ai models upload \
   --container-image-uri=${CONTAINER_URI} \
   --container-env-vars="MODEL_ID=BAAI/bge-reranker-v2-m3" \
-  --display-name="bge-reranker-model" \
+  --container-ports=80 \
+  --container-health-route="/health" \
+  --container-predict-route="/rerank" \
+  --display-name="bge-reranker-model-routes-fixed" \
   --region=${REGION} \
   --project=${PROJECT_ID}
 
-RERANKER_MODEL_ID=$(gcloud ai models list --region=${REGION} --filter="display_name=bge-reranker-model" --format="value(name)" --project=${PROJECT_ID} | head -n 1)
+RERANKER_MODEL_ID=$(gcloud ai models list --region=${REGION} --filter="display_name=bge-reranker-model-routes-fixed" --format="value(name)" --project=${PROJECT_ID} | head -n 1)
 
 gcloud ai endpoints deploy-model ${RERANKER_ENDPOINT_RESOURCE_NAME} \
   --model=${RERANKER_MODEL_ID} \
@@ -592,12 +605,51 @@ gcloud ai endpoints deploy-model ${RERANKER_ENDPOINT_RESOURCE_NAME} \
   --project=${PROJECT_ID}
 ```
 
-#### B. Register Models in AlloyDB
+#### B. Test Vertex AI Endpoints (Optional but Recommended)
+Before registering the models in AlloyDB, it's good practice to verify they are deployed and responding correctly by sending test payloads via `curl`.
+
+```bash
+# 1. Test BGE-M3 Embeddings Endpoint
+# You should see a JSON response containing an array of floats under "predictions"
+curl -s -X POST \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/endpoints/${ENDPOINT_RESOURCE_NAME}:rawPredict \
+  -d '{"inputs": "A warm winter coat"}'
+
+# 2. Test BGE-Reranker-v2-m3 Endpoint
+# You should see a JSON response containing an array of scores (floats) under "predictions"
+curl -X POST \
+  -H "Authorization: Bearer $(gcloud auth print-access-token)" \
+  -H "Content-Type: application/json" \
+  https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/endpoints/${RERANKER_ENDPOINT_RESOURCE_NAME}:rawPredict \
+  -d '{"query": "winter clothing", "texts": ["A summer t-shirt", "A warm winter coat"]}'
+```
+
+#### C. Get Endpoint IDs for AlloyDB
+Run the following commands in your terminal to easily retrieve your Project ID and numeric endpoint IDs before connecting to AlloyDB. You will need to replace `YOUR_PROJECT_ID`, `YOUR_BGE_M3_ENDPOINT_ID`, and `YOUR_RERANKER_ENDPOINT_ID` in the SQL snippet below.
+
+```bash
+export BGE_M3_ENDPOINT_ID=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=bge-m3-endpoint" --format="value(name)" --project=${PROJECT_ID} | awk -F/ '{print $NF}')
+
+export RERANKER_ENDPOINT_ID=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=bge-reranker-endpoint" --format="value(name)" --project=${PROJECT_ID} | awk -F/ '{print $NF}')
+
+cat << EOF
+
+--- Endpoint IDs for AlloyDB ---
+YOUR_PROJECT_ID:           ${PROJECT_ID}
+YOUR_BGE_M3_ENDPOINT_ID:   ${BGE_M3_ENDPOINT_ID}
+YOUR_RERANKER_ENDPOINT_ID: ${RERANKER_ENDPOINT_ID}
+--------------------------------
+EOF
+```
+
+#### D. Register Models in AlloyDB
 We need to register these endpoints with AlloyDB using `google_ml.create_model`. Since these are custom endpoints, we define **transform functions** to map AlloyDB's SQL input/output to the endpoint's JSON format.
 
 ```sql
 -- 1. Input Transform for BGE-M3 (Embeddings)
--- Wraps input text into {"instances": [{"inputs": "text"}]} for Vertex AI TEI
+-- Creates native payload {"inputs": "text"} for TEI rawPredict
 CREATE OR REPLACE FUNCTION bge_m3_input_transform(model_id VARCHAR(100), input_text TEXT)
 RETURNS JSON
 LANGUAGE plpgsql
@@ -606,13 +658,13 @@ AS $$
 DECLARE
   transformed_input JSON;
 BEGIN
-  SELECT json_build_object('instances', json_build_array(json_build_object('inputs', input_text)))::JSON INTO transformed_input;
+  SELECT json_build_object('inputs', input_text)::JSON INTO transformed_input;
   RETURN transformed_input;
 END;
 $$;
 
 -- 2. Output Transform for BGE-M3 (Embeddings)
--- Extracts embedding from {"predictions": [[...]]}
+-- Extracts from native nested array [[...]]
 CREATE OR REPLACE FUNCTION bge_m3_output_transform(model_id VARCHAR(100), response_json JSON)
 RETURNS REAL[]
 LANGUAGE plpgsql
@@ -620,17 +672,16 @@ AS $$
 DECLARE
   transformed_output REAL[];
 BEGIN
-  SELECT ARRAY(SELECT json_array_elements_text(response_json->'predictions'->0)) INTO transformed_output;
+  SELECT ARRAY(SELECT json_array_elements_text(response_json->0)) INTO transformed_output;
   RETURN transformed_output;
 END;
 $$;
 
 -- 3. Register BGE-M3 Model
--- Replace ENDPOINT_ID with your actual Vertex AI Endpoint ID (numeric)
--- Get it via: gcloud ai endpoints list --region=us-central1 --filter="display_name=bge-m3-endpoint"
+-- Replace YOUR_PROJECT_ID and YOUR_BGE_M3_ENDPOINT_ID with the values from the terminal output above
 CALL google_ml.create_model(
   model_id => 'bge-m3',
-  model_request_url => 'https://us-central1-aiplatform.googleapis.com/v1/projects/' || current_setting('google_ml_integration.project_id') || '/locations/us-central1/endpoints/YOUR_BGE_M3_ENDPOINT_ID:predict',
+  model_request_url => 'https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1/endpoints/YOUR_BGE_M3_ENDPOINT_ID:rawPredict',
   model_provider => 'custom',
   model_type => 'text_embedding',
   model_in_transform_fn => 'bge_m3_input_transform',
@@ -638,7 +689,7 @@ CALL google_ml.create_model(
 );
 
 -- 4. Input Transform for BGE-Reranker (Reranking)
--- Wraps input into {"instances": [{"texts": ["..."], "query": "..."}]}
+-- Creates native payload {"query": "...", "texts": ["..."]} for TEI rawPredict
 CREATE OR REPLACE FUNCTION bge_reranker_input_transform(model_id VARCHAR(100), search_string TEXT, documents TEXT[], top_n INT DEFAULT NULL)
 RETURNS JSON
 LANGUAGE plpgsql
@@ -647,13 +698,13 @@ AS $$
 DECLARE
   transformed_input JSON;
 BEGIN
-  SELECT json_build_object('instances', json_build_array(json_build_object('query', search_string, 'texts', array_to_json(documents))))::JSON INTO transformed_input;
+  SELECT json_build_object('query', search_string, 'texts', array_to_json(documents))::JSON INTO transformed_input;
   RETURN transformed_input;
 END;
 $$;
 
 -- 5. Output Transform for BGE-Reranker (Reranking)
--- Maps predictions to (index, score) pairs
+-- Maps predictions from [{"index": 0, "score": 0.99}] array to (index, score) pairs
 CREATE OR REPLACE FUNCTION bge_reranker_output_transform(model_id VARCHAR(100), response_json JSON)
 RETURNS TABLE (index INT, score REAL)
 LANGUAGE plpgsql
@@ -662,24 +713,36 @@ DECLARE
   transformed_output JSON;
 BEGIN
   RETURN QUERY
-  SELECT (row_number() OVER ())::INT AS index, (elem::text)::REAL AS score
-  FROM json_array_elements(response_json->'predictions') AS elem;
+  SELECT (elem->>'index')::INT AS index, (elem->>'score')::REAL AS score
+  FROM json_array_elements(response_json) AS elem;
 END;
 $$;
 
 -- 6. Register BGE-Reranker Model
--- Replace YOUR_RERANKER_ENDPOINT_ID with actual numeric ID
+-- Replace YOUR_PROJECT_ID and YOUR_RERANKER_ENDPOINT_ID with the values from the terminal output above
 CALL google_ml.create_model(
   model_id => 'bge-reranker-v2-m3',
-  model_request_url => 'https://us-central1-aiplatform.googleapis.com/v1/projects/' || current_setting('google_ml_integration.project_id') || '/locations/us-central1/endpoints/YOUR_RERANKER_ENDPOINT_ID:predict',
+  model_request_url => 'https://us-central1-aiplatform.googleapis.com/v1/projects/YOUR_PROJECT_ID/locations/us-central1/endpoints/YOUR_RERANKER_ENDPOINT_ID:rawPredict',
   model_provider => 'custom',
   model_type => 'reranking',
   model_in_transform_fn => 'bge_reranker_input_transform',
   model_out_transform_fn => 'bge_reranker_output_transform'
 );
+
+-- 7. Test the Registered Models (Optional but Recommended)
+-- Ensure AlloyDB can successfully communicate with your Vertex AI Endpoint
+SELECT embedding('bge-m3', 'A warm winter coat')::vector(10); -- Truncating to 10 dims for easy viewing
+
+-- Ensure the ranker can score text correctly
+SELECT * FROM ai.rank(
+  model_id => 'bge-reranker-v2-m3',
+  search_string => 'winter clothing',
+  documents => ARRAY['A summer t-shirt', 'A warm winter coat'],
+  top_n => 2
+);
 ```
 
-#### C. Compare Results (Gemini vs BGE-M3 vs BGE-Reranker)
+#### E. Compare Results (Gemini vs BGE-M3 vs BGE-Reranker)
 Add a column for BGE-M3 embeddings and run a comparison query.
 
 ```sql
