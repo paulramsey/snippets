@@ -53,6 +53,7 @@ gcloud services enable \
   discoveryengine.googleapis.com \
   cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
+  orgpolicy.googleapis.com \
   --project=${PROJECT_ID}
 
 # 3. Configure Networking (Private Services Access - Required)
@@ -209,7 +210,7 @@ You can run these SQL commands using **AlloyDB Studio** in the [Cloud Console](h
 ```bash
 # Connect using the postgres user and the instance's Public IP
 # You can find the IP with: gcloud alloydb instances describe $INSTANCE_ID --cluster=$CLUSTER_ID --region=$REGION --format="value(ipAddress)"
-IP_ADDRESS=$(gcloud alloydb instances describe ${INSTANCE_ID} --cluster=${CLUSTER_ID} --region=${REGION} --format="value(ipAddress)")
+IP_ADDRESS=$(gcloud alloydb instances describe ${INSTANCE_ID} --cluster=${CLUSTER_ID} --region=${REGION} --format="value(publicIpAddress)")
 
 PGPASSWORD=${PASSWORD} psql -h ${IP_ADDRESS} -U postgres postgres
 ```
@@ -566,11 +567,11 @@ gcloud ai models upload \
   --container-ports=80 \
   --container-health-route="/health" \
   --container-predict-route="/embed" \
-  --display-name="bge-m3-model-routes-fixed" \
+  --display-name="bge-m3-model" \
   --region=${REGION} \
   --project=${PROJECT_ID}
 
-MODEL_ID=$(gcloud ai models list --region=${REGION} --filter="display_name=bge-m3-model-routes-fixed" --format="value(name)" --project=${PROJECT_ID} | head -n 1)
+MODEL_ID=$(gcloud ai models list --region=${REGION} --filter="display_name=bge-m3-model" --format="value(name)" --project=${PROJECT_ID} | head -n 1)
 
 gcloud ai endpoints deploy-model ${ENDPOINT_RESOURCE_NAME} \
   --model=${MODEL_ID} \
@@ -590,11 +591,11 @@ gcloud ai models upload \
   --container-ports=80 \
   --container-health-route="/health" \
   --container-predict-route="/rerank" \
-  --display-name="bge-reranker-model-routes-fixed" \
+  --display-name="bge-reranker-model" \
   --region=${REGION} \
   --project=${PROJECT_ID}
 
-RERANKER_MODEL_ID=$(gcloud ai models list --region=${REGION} --filter="display_name=bge-reranker-model-routes-fixed" --format="value(name)" --project=${PROJECT_ID} | head -n 1)
+RERANKER_MODEL_ID=$(gcloud ai models list --region=${REGION} --filter="display_name=bge-reranker-model" --format="value(name)" --project=${PROJECT_ID} | head -n 1)
 
 gcloud ai endpoints deploy-model ${RERANKER_ENDPOINT_RESOURCE_NAME} \
   --model=${RERANKER_MODEL_ID} \
@@ -655,6 +656,7 @@ fastapi
 uvicorn
 httpx
 google-auth
+requests
 EOF
 
 cat << 'EOF' > main.py
@@ -714,26 +716,29 @@ gcloud run deploy tei-proxy \
   --set-env-vars="REGION=${REGION},PROJECT_ID=${PROJECT_ID}" \
   --quiet
 
-# 4. If running in Argolis, you may need to disable org policy blocking external access and allow unauthenticated proxy requests
-cat << 'EOF' > policy.yaml
+# 4. If running in Argolis, you may need to disable org policies blocking external access
+cd ..
+
+# Allow all domains for IAM (required for allUsers/unauthenticated Cloud Run)
+cat << EOF > policy_iam.yaml
 name: projects/${PROJECT_ID}/policies/iam.allowedPolicyMemberDomains
 spec:
   rules:
   - allowAll: true
 EOF
+gcloud org-policies set-policy policy_iam.yaml --project=${PROJECT_ID}
 
-gcloud org-policies set-policy policy.yaml
+# Wait 60 seconds for org policies to propagate
+sleep 60
 
-# Wait ~30 seconds for org policy to propagate, then grant public access
-# (Allowing AlloyDB to bypass IAM enforcement to reach the proxy)
-sleep 30 && gcloud run services add-iam-policy-binding tei-proxy \
+# Grant public access to Cloud Run (Allowing AlloyDB to bypass IAM enforcement to reach the proxy)
+gcloud run services add-iam-policy-binding tei-proxy \
   --region=${REGION} \
   --member="allUsers" \
   --role="roles/run.invoker" \
   --project=${PROJECT_ID}
 
 export PROXY_URL=$(gcloud run services describe tei-proxy --region ${REGION} --format 'value(status.url)')
-cd ..
 ```
 
 #### D. Get URLs for AlloyDB Registration
@@ -782,7 +787,7 @@ AS $$
 DECLARE
   transformed_output REAL[];
 BEGIN
-  SELECT ARRAY(SELECT json_array_elements_text(response_json->'predictions')::REAL) INTO transformed_output;
+  SELECT ARRAY(SELECT json_array_elements_text(response_json->'predictions'->0)::REAL) INTO transformed_output;
   RETURN transformed_output;
 END;
 $$;
@@ -906,6 +911,14 @@ CALL ai.initialize_embeddings(
   batch_size => 10
 );
 
+-- Monitor Progress
+SELECT * FROM google_ml.embed_gen_progress;
+
+-- Create ScaNN Index for BGE-M3
+CREATE INDEX product_index_bge_m3 ON product
+USING scann (embedding_bge cosine)
+WITH (mode = 'AUTO');
+
 -- Compare Search Results
 -- 1. Gemini Embedding
 SELECT product_id, name, description, 1 - (embedding <=> embedding('gemini-embedding-001', 'warm fuzzy earmuffs')::vector) as score
@@ -917,14 +930,13 @@ SELECT product_id, name, description, 1 - (embedding_bge <=> embedding('bge-m3',
 FROM product
 ORDER BY score DESC LIMIT 100;
 
-```sql
 -- 3. Reranking Top 10 with BGE-Reranker (Using Hybrid Candidates)
 WITH vector_search AS (
   SELECT product_id, name, description,
          RANK () OVER (ORDER BY embedding_bge <=> embedding('bge-m3', 'warm fuzzy earmuffs')::vector) as rank
   FROM product
   ORDER BY embedding_bge <=> embedding('bge-m3', 'warm fuzzy earmuffs')::vector
-  LIMIT 100
+  LIMIT 25
 ),
 text_search AS (
   SELECT product_id, name, description,
@@ -932,7 +944,7 @@ text_search AS (
   FROM product
   WHERE fts_document @@ plainto_tsquery('english', 'warm fuzzy earmuffs')
   ORDER BY ts_rank(fts_document, plainto_tsquery('english', 'warm fuzzy earmuffs')) DESC
-  LIMIT 100
+  LIMIT 25
 ),
 hybrid_candidates AS (
   SELECT COALESCE(v.product_id, t.product_id) AS product_id,
@@ -943,46 +955,54 @@ hybrid_candidates AS (
   FROM vector_search v
   FULL OUTER JOIN text_search t ON v.product_id = t.product_id
   ORDER BY rrf_score DESC
-  LIMIT 100
+  LIMIT 25
 )
 SELECT p.product_id, p.name, p.description, r.score
 FROM ai.rank(
   model_id => 'bge-reranker-v2-m3',
   search_string => 'warm fuzzy earmuffs',
   documents => (SELECT ARRAY_AGG(description ORDER BY rank_id) FROM hybrid_candidates),
-  top_n => 100
+  top_n => 25
 ) r
 JOIN hybrid_candidates p ON r.index = p.rank_id
 ORDER BY r.score DESC;
 ```
+
+> NOTE: Custom models on Vertex AI via `rawPredict` have an implicit ~1.5MB request limit. Large batches of documents (e.g., 100+ descriptions) can easily trigger a `413 Content Too Large` error. We set our top_k to 25 (via LIMIT 25) to avoid this.
 
 ### 9. Scaling with Read Pools
 To handle high-throughput workloads (like "bid list" uploads) without impacting the primary instance's search performance, use **Read Pool** instances.
 
 1.  **Create a Read Pool**:
     ```bash
+    MY_IP=$(curl -s https://ipv4.icanhazip.com)
     gcloud alloydb instances create alloydb-ai-poc-read-pool \
       --cluster=${CLUSTER_ID} \
       --region=${REGION} \
       --instance-type=READ_POOL \
       --cpu-count=8 \
       --read-pool-node-count=2 \
-      --assign-ip \
-      --project=${PROJECT_ID}
+      --project=${PROJECT_ID} \
+      --machine-type=c4a-highmem-8-lssd \
+      --assign-inbound-public-ip=ASSIGN_IPV4 \
+      --database-flags=password.enforce_complexity=on \
+      --authorized-external-networks=${MY_IP}/32
     ```
 
 2.  **Connect to Read Pool**:
     Use the Read Pool's IP address for read-only queries (Vector Search).
     ```bash
-    READ_POOL_IP=$(gcloud alloydb instances describe alloydb-ai-poc-read-pool --cluster=${CLUSTER_ID} --region=${REGION} --format="value(ipAddress)")
+    READ_POOL_IP=$(gcloud alloydb instances describe alloydb-ai-poc-read-pool --cluster=${CLUSTER_ID} --region=${REGION} --format="value(publicIpAddress)")
     PGPASSWORD=${PASSWORD} psql -h ${READ_POOL_IP} -U postgres postgres
     ```
 
 ### 10. Performance Verification
-Verify that the solution meets the POC latency (<20ms) and QPS (>25) targets.
+Verify that the solution meets the POC latency and QPS targets.
 
 #### A. Generate Synthetic Data
-Scale the dataset to ~100k rows for a more realistic test (13.6M requires more time/storage).
+Scale the dataset to ~100k rows for a more realistic test.
+
+> NOTE: You cannot run INSERTs on a read pool. You must run this on the primary instance.
 
 ```sql
 -- Generate 100,000 synthetic records
@@ -995,102 +1015,230 @@ SELECT
   'http://example.com/image_' || i
 FROM generate_series(100, 100000) AS i;
 
--- Wait for auto-embeddings to catch up
-SELECT count(*) FROM product WHERE embedding IS NOT NULL;
+-- refresh embeddings
+CALL ai.refresh_embeddings(
+  table_name => 'product',
+  embedding_column => 'embedding',
+  batch_size => 50
+);
+
+CALL ai.refresh_embeddings(
+  table_name => 'product',
+  embedding_column => 'embedding_bge',
+  batch_size => 10
+);
+
+-- Monitor Progress
+SELECT * FROM google_ml.embed_gen_progress;
 ```
 
 #### B. Run Benchmark Script
 Use this Python script to measure Latency and QPS.
 
-1.  **Install Dependencies**:
-    Ensure your `pyproject.toml` includes `psycopg2-binary`, `numpy`, and `google-cloud-aiplatform`.
-    ```bash
-    uv sync
-    ```
+> **Benchmarking Best Practices**: For the most representative performance results, this script should be executed from a **GCE instance** located in the **same region (and ideally the same zone)** as your AlloyDB cluster, connected to the same VPC. This eliminates internet latency and allows you to use AlloyDB's **internal IP**, providing a true measurement of the database's performance.
 
-2.  **Create `benchmark.py`**:
-    ```python
-    import time
-    import psycopg2
-    import numpy as np
-    import threading
+1. **Set up benchmark environment**
 
-    DB_HOST = "YOUR_ALLOYDB_IP" # Use Primary or Read Pool IP
-    DB_USER = "postgres"
-    DB_PASS = "supersecretpassword"
-    DB_NAME = "postgres"
+```bash
+# Create a separate configuration for the benchmark to avoid modifying the main project's dependencies:
+cat << EOF > benchmark.toml
+[project]
+name = "alloydb-benchmark"
+version = "0.1.0"
+dependencies = [
+    "psycopg2-binary",
+    "numpy",
+    "google-cloud-aiplatform",
+]
+EOF
 
-    # Global list to store latencies from all threads
-    latencies = []
-    latency_lock = threading.Lock()
+# Install Dependencies:
+# Use the --project flag to specify the benchmark-specific configuration
+uv sync --project benchmark.toml
 
-    def get_connection():
-        return psycopg2.connect(host=DB_HOST, user=DB_USER, password=DB_PASS, dbname=DB_NAME)
+# Get the Internal IP of your Read Pool
+export ALLOYDB_INTERNAL_IP=$(gcloud alloydb instances describe alloydb-ai-poc-read-pool \
+  --cluster=${CLUSTER_ID} --region=${REGION} --format="value(ipAddress)")
 
-    def worker(num_queries):
-        conn = get_connection()
-        cur = conn.cursor()
-        
-        # PREPARE the statement once per connection
-        # We pre-calculate the query embedding here for the benchmark to isolate search performance.
-        # In a real app, the embedding generation might be separate or passed as a parameter.
-        # For this test: ORDER BY embedding <=> (vector)
-        # Note: We hardcode a vector for the prepared statement or pass it as a param.
-        # Let's pass it as a parameter to simulate real-world behavior of receiving a query vector.
-        
-        # 1. Get a dummy vector first to use in PREPARE (or just prepare with a placeholder)
-        cur.execute("SELECT embedding('gemini-embedding-001', 'performance test')::vector")
-        query_vector = cur.fetchone()[0]
-        
-        # 2. Prepare the statement
-        cur.execute(f"PREPARE search_plan (vector) AS SELECT id FROM product ORDER BY embedding <=> $1 LIMIT 100")
-        
-        local_latencies = []
-        
-        for _ in range(num_queries):
-            start = time.time()
-            cur.execute("EXECUTE search_plan (%s)", (query_vector,))
-            cur.fetchall()
-            lat = (time.time() - start) * 1000 # ms
-            local_latencies.append(lat)
-            
-        cur.close()
-        conn.close()
-        
-        with latency_lock:
-            latencies.extend(local_latencies)
+# Create `benchmark.py`
+cat << EOF > benchmark.py
+import time
+import psycopg2
+import numpy as np
+import threading
+import argparse
+import sys
 
-    def benchmark(total_requests=1000, concurrency=10):
-        print(f"Starting benchmark: {total_requests} requests, {concurrency} threads...")
-        
-        threads = []
-        queries_per_thread = total_requests // concurrency
-        
-        start_time = time.time()
-        
-        for _ in range(concurrency):
-            t = threading.Thread(target=worker, args=(queries_per_thread,))
-            threads.append(t)
-            t.start()
-            
-        for t in threads:
-            t.join()
+# Database Configuration
+DB_HOST = "${ALLOYDB_INTERNAL_IP}" 
+DB_USER = "postgres"
+DB_PASS = "${PASSWORD}"
+DB_NAME = "postgres"
 
-        total_time = time.time() - start_time
-        qps = total_requests / total_time
+# Mapping of search types to their database column and model ID
+SEARCH_CONFIG = {
+    "gemini": {
+        "column": "embedding",
+        "model_id": "gemini-embedding-001"
+    },
+    "bge": {
+        "column": "embedding_bge",
+        "model_id": "bge-m3"
+    }
+}
+
+# Global list to store latencies from all threads
+latencies = []
+latency_lock = threading.Lock()
+
+def get_connection():
+    return psycopg2.connect(host=DB_HOST, user=DB_USER, password=DB_PASS, dbname=DB_NAME)
+
+def worker(num_queries, search_type):
+    config = SEARCH_CONFIG[search_type]
+    column = config["column"]
+    model_id = config["model_id"]
+    
+    conn = get_connection()
+    cur = conn.cursor()
+    
+    # 1. Get a dummy vector first to use in PREPARE
+    cur.execute(f"SELECT embedding('{model_id}', 'performance test')::vector")
+    query_vector = cur.fetchone()[0]
+    
+    # 2. Prepare the statement
+    cur.execute(f"PREPARE search_plan (vector) AS SELECT product_id FROM product ORDER BY {column} <=> \$1 LIMIT 100")
+    
+    local_latencies = []
+    
+    for _ in range(num_queries):
+        start = time.time()
+        cur.execute("EXECUTE search_plan (%s)", (query_vector,))
+        cur.fetchall()
+        lat = (time.time() - start) * 1000 # ms
+        local_latencies.append(lat)
         
-        print(f"P50 Latency: {np.percentile(latencies, 50):.2f} ms")
-        print(f"P95 Latency: {np.percentile(latencies, 95):.2f} ms")
-        print(f"QPS: {qps:.2f}")
+    cur.close()
+    conn.close()
+    
+    with latency_lock:
+        latencies.extend(local_latencies)
 
-    if __name__ == "__main__":
-        benchmark()
-    ```
+def benchmark(search_type, total_requests=1000, concurrency=10):
+    print(f"Starting {search_type} benchmark: {total_requests} requests, {concurrency} threads...")
+    
+    threads = []
+    queries_per_thread = total_requests // concurrency
+    
+    start_time = time.time()
+    
+    for _ in range(concurrency):
+        t = threading.Thread(target=worker, args=(queries_per_thread, search_type))
+        threads.append(t)
+        t.start()
+        
+    for t in threads:
+        t.join()
 
-3.  **Run Benchmark**:
-    ```bash
-    python3 benchmark.py
-    ```
+    total_time = time.time() - start_time
+    qps = total_requests / total_time
+    
+    print(f"Model: {search_type} ({SEARCH_CONFIG[search_type]['model_id']})")
+    print(f"P50 Latency: {np.percentile(latencies, 50):.2f} ms")
+    print(f"P95 Latency: {np.percentile(latencies, 95):.2f} ms")
+    print(f"QPS: {qps:.2f}")
+
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="AlloyDB Vector Search Benchmark")
+    parser.add_argument("--type", choices=["gemini", "bge"], default="gemini", help="Type of embedding to benchmark")
+    parser.add_argument("--requests", type=int, default=1000, help="Total number of requests")
+    parser.add_argument("--concurrency", type=int, default=10, help="Number of concurrent threads")
+    
+    args = parser.parse_args()
+    
+    benchmark(args.type, args.requests, args.concurrency)
+EOF
+```
+
+2. **Set Up a GCE Benchmark Client**
+Run these commands in Cloud Shell to create a client instance in the same VPC.
+
+```bash
+# 1. Allow GCE External IP Access & IAP Tunneling
+# Disabling policies that block external IPs (required for the client)
+cat << EOF > policy_gce.yaml
+name: projects/${PROJECT_ID}/policies/compute.vmExternalIpAccess
+spec:
+  rules:
+  - allowAll: true
+  inheritFromParent: false
+EOF
+gcloud org-policies set-policy policy_gce.yaml --project=${PROJECT_ID}
+
+# Grant yourself permission to use IAP Tunneling
+# Replace YOUR_EMAIL with your GCP login email
+export MY_EMAIL=$(gcloud config get-value account)
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="user:${MY_EMAIL}" \
+  --role="roles/iap.tunnelResourceAccessor"
+
+# Wait 60 seconds for org policies to propagate
+sleep 60
+
+# 2. Create the instance
+gcloud compute instances create benchmark-client \
+  --zone=${REGION}-a \
+  --network=alloydb-vpc \
+  --machine-type=e2-medium \
+  --image-family=debian-12 \
+  --image-project=debian-cloud \
+  --scopes=cloud-platform \
+  --shielded-secure-boot \
+  --project=${PROJECT_ID}
+
+# 3. Allow SSH/SCP access (Local IP + IAP Tunneling)
+# Direct access for your local IP
+MY_IP=$(curl -s https://ipv4.icanhazip.com)
+gcloud compute firewall-rules create allow-ssh-from-local \
+  --network=alloydb-vpc --allow=tcp:22 --source-ranges=${MY_IP}/32 \
+  --priority=100 --project=${PROJECT_ID}
+
+# IAP Tunneling access (Mandatory for IAP-based SSH/SCP)
+gcloud compute firewall-rules create allow-ssh-from-iap \
+  --network=alloydb-vpc --allow=tcp:22 --source-ranges=35.235.240.0/20 \
+  --priority=100 --project=${PROJECT_ID}
+
+# Sleep 60 seconds for firewall rules to propagate
+sleep 60
+
+# 4. SCP the benchmark files to the instance
+# Using --tunnel-through-iap for maximum reliability
+gcloud compute scp benchmark.toml benchmark.py benchmark-client:~/ \
+  --zone=${REGION}-a --project=${PROJECT_ID} --tunnel-through-iap
+```
+
+3. **Run the Benchmark on the Instance**
+SSH into the client to install dependencies and execute the script.
+
+```bash
+# 1. SSH into the instance
+gcloud compute ssh benchmark-client --zone=${REGION}-a --project=${PROJECT_ID} --tunnel-through-iap
+
+# 2. Install uv (Python manager)
+curl -LsSf https://astral.sh/uv/install.sh | sh
+source $HOME/.local/bin/env
+
+# 3. Synchronize environment and run
+# We rename to pyproject.toml to simplify the setup
+mv benchmark.toml pyproject.toml
+uv sync
+
+# Run Gemini Benchmark
+uv run python benchmark.py --type gemini
+
+# Run BGE Benchmark
+uv run python benchmark.py --type bge
+```
 
 ## Cleanup
 
@@ -1131,6 +1279,8 @@ Use this Python script to measure Latency and QPS.
 
 ## References
 
+*   [Grant IAM permissions for Vertex AI](https://docs.cloud.google.com/alloydb/docs/ai/configure-vertex-ai#grant-iam-permissions)
+*   [Import a CSV file into AlloyDB](https://docs.cloud.google.com/alloydb/docs/import-csv-file)
 *   [Perform a vector search](https://docs.cloud.google.com/alloydb/docs/ai/perform-vector-search)
 *   [Auto vector embeddings and auto vector index (Blog)](https://cloud.google.com/blog/products/databases/alloydb-ai-auto-vector-embeddings-and-auto-vector-index)
 *   [Generate and manage auto vector embeddings for large tables](https://docs.cloud.google.com/alloydb/docs/ai/generate-manage-auto-embeddings-for-tables)
@@ -1143,7 +1293,8 @@ Use this Python script to measure Latency and QPS.
 *   [Register and call remote AI models](https://docs.cloud.google.com/alloydb/docs/ai/register-model-endpoint)
 *   [BAAI/bge-m3 (Hugging Face)](https://huggingface.co/BAAI/bge-m3)
 *   [BAAI/bge-reranker-v2-m3 (Hugging Face)](https://huggingface.co/BAAI/bge-reranker-v2-m3)
-*   [FlagEmbedding (GitHub)](https://github.com/FlagOpen/FlagEmbedding)
+*   [BGE FlagEmbedding (GitHub)](https://github.com/FlagOpen/FlagEmbedding)
 *   [Marqo/marqo-GS-10M (Hugging Face)](https://huggingface.co/datasets/Marqo/marqo-GS-10M)
-*   [Grant IAM permissions for Vertex AI](https://docs.cloud.google.com/alloydb/docs/ai/configure-vertex-ai#grant-iam-permissions)
-*   [Import a CSV file into AlloyDB](https://docs.cloud.google.com/alloydb/docs/import-csv-file)
+*   [Create an AlloyDB Read Pool](https://docs.cloud.google.com/alloydb/docs/instance-read-pool-create#gcloud)
+*   [Choose an AlloyDB machine type](https://docs.cloud.google.com/alloydb/docs/choose-machine-type)
+

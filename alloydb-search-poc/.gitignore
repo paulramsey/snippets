@@ -12,3 +12,7 @@ __pycache__/
 images/
 *.parquet
 *.csv
+policy*.yaml
+cloudbuild.yaml
+requirements.txt
+main.py
