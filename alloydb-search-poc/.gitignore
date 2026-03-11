@@ -16,3 +16,4 @@ policy*.yaml
 cloudbuild.yaml
 requirements.txt
 main.py
+benchmark*

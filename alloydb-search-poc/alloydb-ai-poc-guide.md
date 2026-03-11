@@ -559,7 +559,6 @@ export CONTAINER_URI="${REGION}-docker.pkg.dev/${PROJECT_ID}/tei-repo/tei:1.7"
 
 # 2. Deploy BAAI/bge-m3 (Embeddings)
 gcloud ai endpoints create --display-name=bge-m3-endpoint --region=${REGION} --project=${PROJECT_ID}
-ENDPOINT_RESOURCE_NAME=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=bge-m3-endpoint" --format="value(name)" --project=${PROJECT_ID})
 
 gcloud ai models upload \
   --container-image-uri=${CONTAINER_URI} \
@@ -571,7 +570,11 @@ gcloud ai models upload \
   --region=${REGION} \
   --project=${PROJECT_ID}
 
+# Wait for the model to be ready
+sleep 30
 MODEL_ID=$(gcloud ai models list --region=${REGION} --filter="display_name=bge-m3-model" --format="value(name)" --project=${PROJECT_ID} | head -n 1)
+
+ENDPOINT_RESOURCE_NAME=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=bge-m3-endpoint" --format="value(name)" --project=${PROJECT_ID})
 
 gcloud ai endpoints deploy-model ${ENDPOINT_RESOURCE_NAME} \
   --model=${MODEL_ID} \
@@ -583,7 +586,6 @@ gcloud ai endpoints deploy-model ${ENDPOINT_RESOURCE_NAME} \
 
 # 3. Deploy BAAI/bge-reranker-v2-m3 (Reranking)
 gcloud ai endpoints create --display-name=bge-reranker-endpoint --region=${REGION} --project=${PROJECT_ID}
-RERANKER_ENDPOINT_RESOURCE_NAME=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=bge-reranker-endpoint" --format="value(name)" --project=${PROJECT_ID})
 
 gcloud ai models upload \
   --container-image-uri=${CONTAINER_URI} \
@@ -595,7 +597,11 @@ gcloud ai models upload \
   --region=${REGION} \
   --project=${PROJECT_ID}
 
+# Wait for the model to be ready
+sleep 30
 RERANKER_MODEL_ID=$(gcloud ai models list --region=${REGION} --filter="display_name=bge-reranker-model" --format="value(name)" --project=${PROJECT_ID} | head -n 1)
+
+RERANKER_ENDPOINT_RESOURCE_NAME=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=bge-reranker-endpoint" --format="value(name)" --project=${PROJECT_ID})
 
 gcloud ai endpoints deploy-model ${RERANKER_ENDPOINT_RESOURCE_NAME} \
   --model=${RERANKER_MODEL_ID} \
@@ -629,133 +635,31 @@ curl -X POST \
 
 #### C. Deploy Cloud Run TEI Translation Proxy
 
-**Why is a proxy necessary?**
-We deploy a lightweight Cloud Run proxy to act as a bridge because of a strict compatibility constraint between how AlloyDB authenticates and how Hugging Face TEI processes batch payloads:
-1. **The AlloyDB Constraint:** To securely authenticate to Google Vertex AI (`*.googleapis.com`), AlloyDB mandates using the `google` model provider. However, the `google` provider rigidly forces all batch inputs to be wrapped inside an `{"instances": [...]}` JSON array before sending the payload over the network.
-2. **The TEI Container Constraint:** The native `ghcr.io` text-embeddings-inference container strictly requires `{"inputs": [...]}` at the highest root level (or `{"query": ...}` for rerankers) on the `:rawPredict` endpoint. It natively rejects the Google `instances` array wrapper with a `missing field 'inputs'` error. 
+#### B. Configure Vertex AI Integration (Direct Endpoint Access)
 
-By registering the model in AlloyDB as a `custom` provider pointing to our proxy, we bypass the `instances` wrapping behavior and send the un-wrapped, correctly-formatted payload directly from our SQL transform sequences. This proxy receives the unauthenticated payload natively, attaches the required Vertex AI IAM Bearer token using its own infrastructure-level service account, and forwards the clean request to the TEI container.
+Now that the models are deployed to Vertex AI endpoints, we will register them in AlloyDB. We will use the `google` model provider to leverage direct IAM-based authentication (`alloydb_service_agent_iam`), eliminating the need for any intermediate proxies.
 
-```bash
-# 1. Grant compute account access to upload build artifacts and invoke Vertex endpoints
-gcloud projects add-iam-policy-binding ${PROJECT_ID} \
-  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
-  --role="roles/storage.objectViewer" \
-  --condition=None
+> [!NOTE]
+> We will target the Vertex AI `:predict` endpoint. AlloyDB will automatically authenticate using its Service Agent.
 
-gcloud projects add-iam-policy-binding ${PROJECT_ID} \
-  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
-  --role="roles/aiplatform.user" \
-  --condition=None
-
-# 2. Setup proxy codebase
-mkdir -p tei-proxy && cd tei-proxy
-
-cat << 'EOF' > requirements.txt
-fastapi
-uvicorn
-httpx
-google-auth
-requests
-EOF
-
-cat << 'EOF' > main.py
-import os
-import httpx
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-import google.auth
-from google.auth.transport.requests import Request as GoogleAuthRequest
-
-app = FastAPI()
-
-try:
-    credentials, project = google.auth.default()
-except google.auth.exceptions.DefaultCredentialsError:
-    credentials = None
-
-@app.post("/predict/{endpoint_id}")
-async def proxy_predict(request: Request, endpoint_id: str):
-    payload = await request.json()
-    
-    # Unpack AlloyDB's internal `{"instances": [ ... ]}` wrapper
-    if "instances" in payload and isinstance(payload["instances"], list) and len(payload["instances"]) > 0:
-        tei_payload = payload["instances"][0]
-    else:
-        tei_payload = payload
-
-    if credentials and not credentials.valid:
-        credentials.refresh(GoogleAuthRequest())
-    
-    # Construct Vertex AI URL
-    region = os.environ.get("REGION", "us-central1")
-    project_id = os.environ.get("PROJECT_ID")
-    vertex_url = f"https://{region}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{region}/endpoints/{endpoint_id}:rawPredict"
-    
-    headers = {"Content-Type": "application/json"}
-    if credentials:
-        headers["Authorization"] = f"Bearer {credentials.token}"
-    
-    # Forward payload to Vertex AI TEI container
-    async with httpx.AsyncClient(timeout=30.0) as client:
-        response = await client.post(vertex_url, json=tei_payload, headers=headers)
-        
-    # Wrap TEI array response back into Vertex AI's {"predictions": ...} standard format
-    return JSONResponse(
-        content={"predictions": response.json()},
-        status_code=response.status_code
-    )
-EOF
-
-# 3. Deploy the proxy
-gcloud run deploy tei-proxy \
-  --source . \
-  --region=${REGION} \
-  --project=${PROJECT_ID} \
-  --allow-unauthenticated \
-  --set-env-vars="REGION=${REGION},PROJECT_ID=${PROJECT_ID}" \
-  --quiet
-
-# 4. If running in Argolis, you may need to disable org policies blocking external access
-cd ..
-
-# Allow all domains for IAM (required for allUsers/unauthenticated Cloud Run)
-cat << EOF > policy_iam.yaml
-name: projects/${PROJECT_ID}/policies/iam.allowedPolicyMemberDomains
-spec:
-  rules:
-  - allowAll: true
-EOF
-gcloud org-policies set-policy policy_iam.yaml --project=${PROJECT_ID}
-
-# Wait 60 seconds for org policies to propagate
-sleep 60
-
-# Grant public access to Cloud Run (Allowing AlloyDB to bypass IAM enforcement to reach the proxy)
-gcloud run services add-iam-policy-binding tei-proxy \
-  --region=${REGION} \
-  --member="allUsers" \
-  --role="roles/run.invoker" \
-  --project=${PROJECT_ID}
-
-export PROXY_URL=$(gcloud run services describe tei-proxy --region ${REGION} --format 'value(status.url)')
-```
-
-#### D. Get URLs for AlloyDB Registration
-Run the following block in your terminal to retrieve the full HTTP proxy URLs configured uniquely for your models. You will replace `YOUR_BGE_M3_PROXY_URL` and `YOUR_RERANKER_PROXY_URL` in the SQL snippet below.
+1. **Retrieve Endpoint URLs**
+Run the following block in your terminal to retrieve the full Vertex AI endpoint URLs. You will use these in the SQL `CALL google_ml.create_model` commands below.
 
 ```bash
-export BGE_M3_ENDPOINT_ID=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=bge-m3-endpoint" --format="value(name)" --project=${PROJECT_ID} | awk -F/ '{print $NF}')
+# Get the BGE-M3 Endpoint URL (Using :rawPredict)
+export BGE_M3_ENDPOINT_URL="https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/endpoints/$(gcloud ai endpoints list --region=${REGION} --filter='display_name=bge-m3-endpoint' --format='value(name)'):rawPredict"
 
-export RERANKER_ENDPOINT_ID=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=bge-reranker-endpoint" --format="value(name)" --project=${PROJECT_ID} | awk -F/ '{print $NF}')
+# Get the BGE-Reranker Endpoint URL (Using :rawPredict)
+export RERANKER_ENDPOINT_URL="https://${REGION}-aiplatform.googleapis.com/v1/projects/${PROJECT_ID}/locations/${REGION}/endpoints/$(gcloud ai endpoints list --region=${REGION} --filter='display_name=bge-reranker-endpoint' --format='value(name)'):rawPredict"
 
 cat << EOF
+------------------------------------------
+BGE-M3 Endpoint: 
+${BGE_M3_ENDPOINT_URL}
 
---- Endpoint URLs for AlloyDB ---
-YOUR_BGE_M3_PROXY_URL:     ${PROXY_URL}/predict/${BGE_M3_ENDPOINT_ID}
-YOUR_RERANKER_PROXY_URL:   ${PROXY_URL}/predict/${RERANKER_ENDPOINT_ID}
----------------------------------
-
+Reranker Endpoint: 
+${RERANKER_ENDPOINT_URL}
+------------------------------------------
 EOF
 ```
 
@@ -764,22 +668,17 @@ We need to register these endpoints with AlloyDB using `google_ml.create_model`.
 
 ```sql
 -- 1. Input Transform for BGE-M3 (Embeddings)
--- Creates native payload {"inputs": ["text"]} for TEI rawPredict
 CREATE OR REPLACE FUNCTION bge_m3_input_transform(model_id VARCHAR(100), input_text TEXT)
 RETURNS JSON
 LANGUAGE plpgsql
 AS $$
-#variable_conflict use_variable
-DECLARE
-  transformed_input JSON;
 BEGIN
-  SELECT json_build_object('inputs', ARRAY[input_text])::JSON INTO transformed_input;
-  RETURN transformed_input;
+  RETURN json_build_object('inputs', ARRAY[input_text]);
 END;
 $$;
 
 -- 2. Output Transform for BGE-M3 (Embeddings)
--- Extracts from native nested array [[...]] handled by Cloud Run Proxy
+-- Extracts from native TEI array response [...] or Vertex AI wrapper if present
 CREATE OR REPLACE FUNCTION bge_m3_output_transform(model_id VARCHAR(100), response_json JSON)
 RETURNS REAL[]
 LANGUAGE plpgsql
@@ -787,7 +686,12 @@ AS $$
 DECLARE
   transformed_output REAL[];
 BEGIN
-  SELECT ARRAY(SELECT json_array_elements_text(response_json->'predictions'->0)::REAL) INTO transformed_output;
+  -- Adaptive logic: handle both raw arrays and Vertex-wrapped responses
+  IF json_typeof(response_json) = 'array' THEN
+    SELECT ARRAY(SELECT json_array_elements_text(response_json->0)::REAL) INTO transformed_output;
+  ELSE
+    SELECT ARRAY(SELECT json_array_elements_text(response_json->'predictions'->0)::REAL) INTO transformed_output;
+  END IF;
   RETURN transformed_output;
 END;
 $$;
@@ -797,11 +701,8 @@ CREATE OR REPLACE FUNCTION bge_m3_batch_input_transform(model_id VARCHAR(100), i
 RETURNS JSON
 LANGUAGE plpgsql
 AS $$
-DECLARE
-  transformed_input JSON;
 BEGIN
-  SELECT json_build_object('inputs', array_to_json(input_texts))::JSON INTO transformed_input;
-  RETURN transformed_input;
+  RETURN json_build_object('inputs', array_to_json(input_texts));
 END;
 $$;
 
@@ -814,9 +715,17 @@ DECLARE
   transformed_output REAL[][];
   row_arr REAL[];
   elem JSON;
+  predictions JSON;
 BEGIN
     transformed_output := '{}'::REAL[][];
-  FOR elem IN SELECT json_array_elements(response_json->'predictions') LOOP
+    -- Adaptive logic for batch response
+    IF json_typeof(response_json) = 'array' THEN
+      predictions := response_json;
+    ELSE
+      predictions := response_json->'predictions';
+    END IF;
+
+  FOR elem IN SELECT json_array_elements(predictions) LOOP
     SELECT ARRAY(SELECT json_array_elements_text(elem)::REAL) INTO row_arr;
     IF array_length(transformed_output, 1) IS NULL THEN
       transformed_output := ARRAY[row_arr];
@@ -829,12 +738,13 @@ END;
 $$;
 
 -- 3. Register BGE-M3 Model
--- Replace YOUR_PROJECT_ID and YOUR_BGE_M3_PROXY_URL with the values from the terminal output above
+-- Use the BGE_M3_ENDPOINT_URL exported in the terminal earlier
 CALL google_ml.create_model(
   model_id => 'bge-m3',
-  model_request_url => 'YOUR_BGE_M3_PROXY_URL',
-  model_provider => 'custom',
+  model_request_url => 'YOUR_BGE_M3_ENDPOINT_URL',
+  model_provider => 'google',
   model_type => 'text_embedding',
+  model_auth_type => 'alloydb_service_agent_iam',
   model_in_transform_fn => 'bge_m3_input_transform',
   model_out_transform_fn => 'bge_m3_output_transform',
   model_batch_in_transform_fn => 'bge_m3_batch_input_transform',
@@ -842,42 +752,45 @@ CALL google_ml.create_model(
 );
 
 -- 4. Input Transform for BGE-Reranker (Reranking)
--- Creates native payload {"query": "...", "texts": ["..."]} for TEI rawPredict
+-- Creates native TEI payload {"query": "...", "texts": [...] }
 CREATE OR REPLACE FUNCTION bge_reranker_input_transform(model_id VARCHAR(100), search_string TEXT, documents TEXT[], top_n INT DEFAULT NULL)
 RETURNS JSON
 LANGUAGE plpgsql
 AS $$
-#variable_conflict use_variable
-DECLARE
-  transformed_input JSON;
 BEGIN
-  SELECT json_build_object('query', search_string, 'texts', array_to_json(documents))::JSON INTO transformed_input;
-  RETURN transformed_input;
+  RETURN json_build_object('query', search_string, 'texts', array_to_json(documents));
 END;
 $$;
 
 -- 5. Output Transform for BGE-Reranker (Reranking)
--- Maps predictions from [{"index": 0, "score": 0.99}] array handled by proxy
+-- Maps predictions from native TEI array response [{"index": 0, "score": 0.99}, ...]
 CREATE OR REPLACE FUNCTION bge_reranker_output_transform(model_id VARCHAR(100), response_json JSON)
 RETURNS TABLE (index INT, score REAL)
 LANGUAGE plpgsql
 AS $$
 DECLARE
-  transformed_output JSON;
+  predictions JSON;
 BEGIN
+  IF json_typeof(response_json) = 'array' THEN
+    predictions := response_json;
+  ELSE
+    predictions := response_json->'predictions'->0;
+  END IF;
+
   RETURN QUERY
   SELECT (elem->>'index')::INT AS index, (elem->>'score')::REAL AS score
-  FROM json_array_elements(response_json->'predictions') AS elem;
+  FROM json_array_elements(predictions) AS elem;
 END;
 $$;
 
 -- 6. Register BGE-Reranker Model
--- Replace YOUR_PROJECT_ID and YOUR_RERANKER_PROXY_URL with the values from the terminal output above
+-- Use the RERANKER_ENDPOINT_URL exported in the terminal earlier
 CALL google_ml.create_model(
   model_id => 'bge-reranker-v2-m3',
-  model_request_url => 'YOUR_RERANKER_PROXY_URL',
-  model_provider => 'custom',
+  model_request_url => 'YOUR_RERANKER_ENDPOINT_URL',
+  model_provider => 'google',
   model_type => 'reranking',
+  model_auth_type => 'alloydb_service_agent_iam',
   model_in_transform_fn => 'bge_reranker_input_transform',
   model_out_transform_fn => 'bge_reranker_output_transform'
 );
@@ -971,7 +884,7 @@ ORDER BY r.score DESC;
 > NOTE: Custom models on Vertex AI via `rawPredict` have an implicit ~1.5MB request limit. Large batches of documents (e.g., 100+ descriptions) can easily trigger a `413 Content Too Large` error. We set our top_k to 25 (via LIMIT 25) to avoid this.
 
 ### 9. Scaling with Read Pools
-To handle high-throughput workloads (like "bid list" uploads) without impacting the primary instance's search performance, use **Read Pool** instances.
+To handle high-throughput workloads without impacting the primary instance's search performance, use **Read Pool** instances.
 
 1.  **Create a Read Pool**:
     ```bash
@@ -1051,10 +964,6 @@ dependencies = [
     "google-cloud-aiplatform",
 ]
 EOF
-
-# Install Dependencies:
-# Use the --project flag to specify the benchmark-specific configuration
-uv sync --project benchmark.toml
 
 # Get the Internal IP of your Read Pool
 export ALLOYDB_INTERNAL_IP=$(gcloud alloydb instances describe alloydb-ai-poc-read-pool \
