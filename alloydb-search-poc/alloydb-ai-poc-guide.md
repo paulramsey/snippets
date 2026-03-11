@@ -943,6 +943,12 @@ CALL ai.refresh_embeddings(
 
 -- Monitor Progress
 SELECT * FROM google_ml.embed_gen_progress;
+
+-- Reindex the bge embedding scann index
+REINDEX INDEX CONCURRENTLY product_index_bge_m3;
+
+-- Reindex the gemini embedding scann index
+REINDEX INDEX CONCURRENTLY product_index;
 ```
 
 #### B. Run Benchmark Script
@@ -1148,6 +1154,290 @@ uv run python benchmark.py --type gemini
 # Run BGE Benchmark
 uv run python benchmark.py --type bge
 ```
+
+#### Optional: Cloud Run TEI Custom Logic Proxy
+
+**Why use a proxy?**
+While direct integration between AlloyDB and Vertex AI `:rawPredict` endpoints is the native and recommended architecture, deploying a lightweight Cloud Run proxy provides maximum flexibility for complex integration scenarios. 
+
+Using a proxy is ideal if you need to:
+1. **Implement Custom Logic**: Perform data pre-processing, filtering, or specialized logging in Python before the payload reaches the model.
+2. **Manage Dynamic Authentication**: While AlloyDB supports custom providers via long-lived API keys in Secret Manager, Cloud Run allows you to implement complex authentication logic, such as periodically refreshing short-lived OAuth tokens or handling multi-step handshake protocols that are not possible with static keys.
+3. **Simplify SQL Transforms**: Offload JSON payload mapping from PL/pgSQL to Python for easier maintenance and debugging.
+
+```bash
+# 1. Grant compute account access to upload build artifacts and invoke Vertex endpoints
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/storage.objectViewer" \
+  --condition=None
+
+gcloud projects add-iam-policy-binding ${PROJECT_ID} \
+  --member="serviceAccount:${PROJECT_NUMBER}-compute@developer.gserviceaccount.com" \
+  --role="roles/aiplatform.user" \
+  --condition=None
+
+# 2. Setup proxy codebase
+mkdir -p tei-proxy && cd tei-proxy
+
+cat << 'EOF' > requirements.txt
+fastapi
+uvicorn
+httpx
+google-auth
+requests
+EOF
+
+cat << 'EOF' > main.py
+import os
+import httpx
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse
+import google.auth
+from google.auth.transport.requests import Request as GoogleAuthRequest
+
+app = FastAPI()
+
+try:
+    credentials, project = google.auth.default()
+except google.auth.exceptions.DefaultCredentialsError:
+    credentials = None
+
+@app.post("/predict/{endpoint_id}")
+async def proxy_predict(request: Request, endpoint_id: str):
+    payload = await request.json()
+    
+    # Unpack AlloyDB's internal `{"instances": [ ... ]}` wrapper
+    if "instances" in payload and isinstance(payload["instances"], list) and len(payload["instances"]) > 0:
+        tei_payload = payload["instances"][0]
+    else:
+        tei_payload = payload
+
+    if credentials and not credentials.valid:
+        credentials.refresh(GoogleAuthRequest())
+    
+    # Construct Vertex AI URL
+    region = os.environ.get("REGION", "us-central1")
+    project_id = os.environ.get("PROJECT_ID")
+    vertex_url = f"https://{region}-aiplatform.googleapis.com/v1/projects/{project_id}/locations/{region}/endpoints/{endpoint_id}:rawPredict"
+    
+    headers = {"Content-Type": "application/json"}
+    if credentials:
+        headers["Authorization"] = f"Bearer {credentials.token}"
+    
+    # Forward payload to Vertex AI TEI container
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        response = await client.post(vertex_url, json=tei_payload, headers=headers)
+        
+    # Wrap TEI array response back into Vertex AI's {"predictions": ...} standard format
+    return JSONResponse(
+        content={"predictions": response.json()},
+        status_code=response.status_code
+    )
+EOF
+
+# 3. Deploy the proxy
+gcloud run deploy tei-proxy \
+  --source . \
+  --region=${REGION} \
+  --project=${PROJECT_ID} \
+  --allow-unauthenticated \
+  --set-env-vars="REGION=${REGION},PROJECT_ID=${PROJECT_ID}" \
+  --quiet
+
+# 4. If running in Argolis, you may need to disable org policies blocking external access
+cd ..
+
+# Allow all domains for IAM (required for allUsers/unauthenticated Cloud Run)
+cat << EOF > policy_iam.yaml
+name: projects/${PROJECT_ID}/policies/iam.allowedPolicyMemberDomains
+spec:
+  rules:
+  - allowAll: true
+EOF
+gcloud org-policies set-policy policy_iam.yaml --project=${PROJECT_ID}
+
+# Wait 70 seconds for org policies to propagate
+sleep 70
+
+# Grant public access to Cloud Run (Allowing AlloyDB to bypass IAM enforcement to reach the proxy)
+gcloud run services add-iam-policy-binding tei-proxy \
+  --region=${REGION} \
+  --member="allUsers" \
+  --role="roles/run.invoker" \
+  --project=${PROJECT_ID}
+
+export PROXY_URL=$(gcloud run services describe tei-proxy --region ${REGION} --format 'value(status.url)')
+```
+
+#### D. Get URLs for AlloyDB Registration
+Run the following block in your terminal to retrieve the full HTTP proxy URLs configured uniquely for your models. You will replace `YOUR_BGE_M3_PROXY_URL` and `YOUR_RERANKER_PROXY_URL` in the SQL snippet below.
+
+```bash
+export BGE_M3_ENDPOINT_ID=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=bge-m3-endpoint" --format="value(name)" --project=${PROJECT_ID} | awk -F/ '{print $NF}')
+
+export RERANKER_ENDPOINT_ID=$(gcloud ai endpoints list --region=${REGION} --filter="display_name=bge-reranker-endpoint" --format="value(name)" --project=${PROJECT_ID} | awk -F/ '{print $NF}')
+
+cat << EOF
+
+--- Endpoint URLs for AlloyDB ---
+YOUR_BGE_M3_PROXY_URL:     ${PROXY_URL}/predict/${BGE_M3_ENDPOINT_ID}
+YOUR_RERANKER_PROXY_URL:   ${PROXY_URL}/predict/${RERANKER_ENDPOINT_ID}
+---------------------------------
+
+EOF
+```
+
+#### D. Register Models in AlloyDB (via Proxy)
+We can now register these endpoints with AlloyDB using `google_ml.create_model`. Note that when using the proxy, we use the `custom` provider.
+
+```sql
+-- 1. Input Transform for BGE-M3 (Embeddings)
+-- Creates native payload {"inputs": ["text"]} for TEI rawPredict
+CREATE OR REPLACE FUNCTION bge_m3_proxy_input_transform(model_id VARCHAR(100), input_text TEXT)
+RETURNS JSON
+LANGUAGE plpgsql
+AS $$
+#variable_conflict use_variable
+DECLARE
+  transformed_input JSON;
+BEGIN
+  SELECT json_build_object('inputs', ARRAY[input_text])::JSON INTO transformed_input;
+  RETURN transformed_input;
+END;
+$$;
+
+-- 2. Output Transform for BGE-M3 (Embeddings)
+-- Extracts from native nested array [[...]] handled by Cloud Run Proxy
+CREATE OR REPLACE FUNCTION bge_m3_proxy_output_transform(model_id VARCHAR(100), response_json JSON)
+RETURNS REAL[]
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  transformed_output REAL[];
+BEGIN
+  SELECT ARRAY(SELECT json_array_elements_text(response_json->'predictions'->0)::REAL) INTO transformed_output;
+  RETURN transformed_output;
+END;
+$$;
+
+-- 2b. Batch Input Transform for BGE-M3
+CREATE OR REPLACE FUNCTION bge_m3_proxy_batch_input_transform(model_id VARCHAR(100), input_texts TEXT[])
+RETURNS JSON
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  transformed_input JSON;
+BEGIN
+  SELECT json_build_object('inputs', array_to_json(input_texts))::JSON INTO transformed_input;
+  RETURN transformed_input;
+END;
+$$;
+
+-- 2c. Batch Output Transform for BGE-M3
+CREATE OR REPLACE FUNCTION bge_m3_proxy_batch_output_transform(model_id VARCHAR(100), response_json JSON)
+RETURNS REAL[][]
+LANGUAGE plpgsql
+AS $$
+DECLARE
+  transformed_output REAL[][];
+  row_arr REAL[];
+  elem JSON;
+BEGIN
+    transformed_output := '{}'::REAL[][];
+  FOR elem IN SELECT json_array_elements(response_json->'predictions') LOOP
+    SELECT ARRAY(SELECT json_array_elements_text(elem)::REAL) INTO row_arr;
+    IF array_length(transformed_output, 1) IS NULL THEN
+      transformed_output := ARRAY[row_arr];
+    ELSE
+      transformed_output := array_cat(transformed_output, ARRAY[row_arr]);
+    END IF;
+  END LOOP;
+  RETURN transformed_output;
+END;
+$$;
+
+-- 3. Register BGE-M3 Model via Proxy
+-- Replace YOUR_BGE_M3_PROXY_URL with the value from the terminal output above
+CALL google_ml.drop_model(model_id => 'bge-m3');
+CALL google_ml.create_model(
+  model_id => 'bge-m3',
+  model_request_url => 'YOUR_BGE_M3_PROXY_URL',
+  model_provider => 'custom',
+  model_type => 'text_embedding',
+  model_in_transform_fn => 'bge_m3_proxy_input_transform',
+  model_out_transform_fn => 'bge_m3_proxy_output_transform',
+  model_batch_in_transform_fn => 'bge_m3_proxy_batch_input_transform',
+  model_batch_out_transform_fn => 'bge_m3_proxy_batch_output_transform'
+);
+
+-- 4. Input Transform for BGE-Reranker (Reranking)
+-- Creates native payload {"query": "...", "texts": ["..."]} for TEI rawPredict
+CREATE OR REPLACE FUNCTION bge_reranker_proxy_input_transform(model_id VARCHAR(100), search_string TEXT, documents TEXT[], top_n INT DEFAULT NULL)
+RETURNS JSON
+LANGUAGE plpgsql
+AS $$
+#variable_conflict use_variable
+DECLARE
+  transformed_input JSON;
+BEGIN
+  SELECT json_build_object('query', search_string, 'texts', array_to_json(documents))::JSON INTO transformed_input;
+  RETURN transformed_input;
+END;
+$$;
+
+-- 5. Output Transform for BGE-Reranker (Reranking)
+-- Maps predictions from [{"index": 0, "score": 0.99}] array handled by proxy
+CREATE OR REPLACE FUNCTION bge_reranker_proxy_output_transform(model_id VARCHAR(100), response_json JSON)
+RETURNS TABLE (index INT, score REAL)
+LANGUAGE plpgsql
+AS $$
+BEGIN
+  RETURN QUERY
+  SELECT (elem->>'index')::INT AS index, (elem->>'score')::REAL AS score
+  FROM json_array_elements(response_json->'predictions') AS elem;
+END;
+$$;
+
+-- 6. Register BGE-Reranker Model via Proxy
+-- Replace YOUR_RERANKER_PROXY_URL with the value from the terminal output above
+CALL google_ml.drop_model(model_id => 'bge-reranker');
+CALL google_ml.create_model(
+  model_id => 'bge-reranker',
+  model_request_url => 'YOUR_RERANKER_PROXY_URL',
+  model_provider => 'custom',
+  model_type => 'reranking',
+  model_in_transform_fn => 'bge_reranker_proxy_input_transform',
+  model_out_transform_fn => 'bge_reranker_proxy_output_transform'
+);
+
+-- 7. Test the Registered Models (Optional but Recommended)
+-- Ensure AlloyDB can successfully communicate with your Vertex AI Endpoint
+SELECT embedding('bge-m3', 'A warm winter coat');
+
+-- Ensure the ranker can score text correctly
+SELECT * FROM ai.rank(
+  model_id => 'bge-reranker-v2-m3',
+  search_string => 'winter clothing',
+  documents => ARRAY['A summer t-shirt', 'A warm winter coat'],
+  top_n => 2
+);
+```
+
+### 3. Verify Integration via Proxy
+
+Reconnect to your benchmark client and run the BGE benchmark again to verify that your custom proxy logic is working as expected.
+
+```bash
+# 1. SSH into the Benchmark Instance
+gcloud compute ssh benchmark-client --zone=${REGION}-a --project=${PROJECT_ID} --tunnel-through-iap
+
+# 2. Run BGE Benchmark to verify proxy integration
+# If you re-registered the model_id 'bge-m3' using the proxy URL, this script will now route through Cloud Run.
+uv run python benchmark.py --type bge
+```
+
+---
 
 ## Cleanup
 
